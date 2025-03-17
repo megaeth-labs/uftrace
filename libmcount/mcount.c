@@ -222,6 +222,15 @@ static void mcount_signal_trigger(int sig)
 	}
 }
 
+static bool uftrace_eval_cond_with_context(struct uftrace_filter_cond *cond,
+					   struct mcount_arg_context *ctx)
+{
+	if (cond->off == -1) {
+		return uftrace_eval_cond(cond, &ctx->val.i);
+	}
+	return uftrace_eval_cond(cond, ctx->val.p);
+}
+
 /* clang-format off */
 #define SIGTABLE_ENTRY(s)  { #s, s }
 /* clang-format on */
@@ -1038,7 +1047,7 @@ enum filter_result mcount_entry_filter_check(struct mcount_thread_data *mtdp, un
 		mcount_arch_get_arg(&ctx, &spec);
 
 		/* keep the filter only if the condition is met */
-		if (!uftrace_eval_cond(&tr->cond, ctx.val.i))
+		if (!uftrace_eval_cond_with_context(&tr->cond, &ctx))
 			tr->flags &= ~TRIGGER_FL_FILTER;
 	}
 

@@ -40,7 +40,30 @@ static void snprintf_trigger_cond(char *buf, size_t len, struct uftrace_filter_c
 {
 	const char *op_str[] = { "==", "!=", ">", ">=", "<", "<=" };
 
-	snprintf(buf, len, "arg%d %s %ld", cond->idx, op_str[cond->op], cond->val);
+	if (cond->off == -1) {
+		// Direct value comparison: e.g., "arg1 == 1234"
+		// cond->val is a malloc'd block of size sizeof(long)
+		long val;
+		memcpy(&val, cond->val, sizeof(long)); // Copy the value from cond->val
+		snprintf(buf, len, "arg%d %s %ld", cond->idx, op_str[cond->op], val);
+	}
+	else {
+		// Memory block comparison: e.g., "arg1+4:2 == 0x1234"
+		char hex_str[cond->size * 2 + 3]; // 2 chars per byte + "0x" + null terminator
+		unsigned char *bytes = (unsigned char *)cond->val;
+		int pos = 0;
+
+		// Build hex string: "0x" prefix followed by bytes
+		pos += snprintf(hex_str + pos, sizeof(hex_str) - pos, "0x");
+		for (int i = 0; i < cond->size; i++) {
+			pos += snprintf(hex_str + pos, sizeof(hex_str) - pos, "%02" PRIX8,
+					bytes[i]);
+		}
+
+		// Format the full condition string
+		snprintf(buf, len, "arg%d+%d:%d %s %s", cond->idx, cond->off, cond->size,
+			 op_str[cond->op], hex_str);
+	}
 }
 
 static void print_trigger(struct uftrace_trigger *tr)
@@ -307,21 +330,28 @@ void update_trigger(struct uftrace_filter *filter, struct uftrace_trigger *tr, b
 		filter->trigger.size = tr->size;
 }
 
-bool uftrace_eval_cond(struct uftrace_filter_cond *cond, long val)
+bool uftrace_eval_cond(struct uftrace_filter_cond *cond, void *val)
 {
 	switch (cond->op) {
 	case FILTER_OP_EQ:
-		return val == cond->val;
+		return memcmp(val + cond->off, cond->val, cond->size) == 0;
 	case FILTER_OP_NE:
-		return val != cond->val;
+		return memcmp(val + cond->off, cond->val, cond->size) != 0;
 	case FILTER_OP_GT:
-		return val > cond->val;
+		return memcmp(val + cond->off, cond->val, cond->size) > 0;
 	case FILTER_OP_GE:
-		return val >= cond->val;
+		return memcmp(val + cond->off, cond->val, cond->size) >= 0;
 	case FILTER_OP_LT:
-		return val < cond->val;
+		return memcmp(val + cond->off, cond->val, cond->size) < 0;
 	case FILTER_OP_LE:
-		return val <= cond->val;
+		return memcmp(val + cond->off, cond->val, cond->size) <= 0;
+	case FILTER_OP_BETWEEN: {
+		long v;
+		struct uftrace_filter_between_cond *bp = cond->val;
+
+		memcpy(&v, val + cond->off, sizeof(long));
+		return v >= bp->l && v <= bp->h;
+	}
 	default:
 		return false;
 	}
@@ -783,16 +813,21 @@ static int parse_hide_action(char *action, struct uftrace_trigger *tr,
 	return 0;
 }
 
-/* if:arg1==1234, single condition only */
+/*
+ * if:arg1==1234, single condition
+ * if:args1+0:2==0x1234, memory condition
+ * if:args1+0:2<>1:2, range condition
+ */
 static int parse_cond_action(char *action, struct uftrace_trigger *tr,
 			     struct uftrace_filter_setting *setting)
 {
-	const char *op_str[] = { "==", "!=", ">", ">=", "<", "<=" };
+	const char *op_str[] = { "==", "!=", ">", ">=", "<", "<=", "--" };
 	char *expr = action + 3;
 	char *pos;
 	int idx;
 	int op = -1;
-	long val;
+	int off = -1; /* default direct value */
+	int size = 0;
 
 	if (strncmp(expr, "arg", 3)) {
 		pr_use("ignoring invalid arg: %s\n", expr);
@@ -803,6 +838,31 @@ static int parse_cond_action(char *action, struct uftrace_trigger *tr,
 	if (idx < 1 || idx > 6) { /* don't support retval */
 		pr_use("only support up to 6 argument for now\n");
 		return -1;
+	}
+
+	/* check for optional "+offset:size" syntax */
+	if (*pos == '+') {
+		char *tmp;
+
+		off = strtol(pos + 1, &tmp, 0);
+		if (tmp == pos + 1 || off < 0) {
+			pr_use("ignoring invalid offset: %s\n", pos + 1);
+			return -1;
+		}
+		pos = tmp;
+		if (*pos != ':') {
+			pr_use("ignoring invalid size: %s\n", pos + 1);
+			return -1;
+		}
+		size = strtol(pos + 1, &tmp, 0);
+		if (tmp == pos + 1 || size < 0) {
+			pr_use("ignoring invalid size: %s\n", pos + 1);
+			return -1;
+		}
+		pos = tmp;
+	}
+	else {
+		size = sizeof(long);
 	}
 
 	/* reverse order match to find "<=" before "<" */
@@ -819,11 +879,62 @@ static int parse_cond_action(char *action, struct uftrace_trigger *tr,
 		return -1;
 	}
 
-	val = strtol(pos, NULL, 0);
+	if ((tr->cond.val = malloc(size)) == NULL) {
+		pr_err("malloc failed\n");
+		return -1;
+	}
+	if (op == FILTER_OP_BETWEEN) {
+		char *tmp;
+		long l, h;
+		struct uftrace_filter_between_cond *bp;
+
+		l = strtol(pos, &tmp, 0);
+		if (tmp == pos || l < 0) {
+			pr_use("ignoring invalid range low value: %s\n", pos);
+			return -1;
+		}
+		pos = tmp;
+		if (*pos != ':') {
+			pr_use("ignoring invalid range value: %s\n", pos + 1);
+			return -1;
+		}
+		h = strtol(pos + 1, &tmp, 0);
+		if (tmp == pos + 1 || h < 0) {
+			pr_use("ignoring invalid range high value: %s\n", pos + 1);
+			return -1;
+		}
+		pos = tmp;
+		if ((tr->cond.val = realloc(tr->cond.val,
+					    sizeof(struct uftrace_filter_between_cond))) == NULL) {
+			pr_err("realloc failed\n");
+			return -1;
+		}
+		bp = tr->cond.val;
+		bp->l = l;
+		bp->h = h;
+	}
+	else if (off >= 0) {
+		/* skip 0x prefix */
+		if (strncmp(pos, "0x", 2) == 0) {
+			pos += 2;
+		}
+		if (strlen(pos) != (size_t)size * 2) {
+			pr_use("ignoring invalid value: %s\n", pos);
+			return -1;
+		}
+		for (int i = 0; i < size; i++) {
+			sscanf(pos + i * 2, "%2hhx", &((unsigned char *)tr->cond.val)[i]);
+		}
+	}
+	else {
+		long val = strtol(pos, NULL, 0);
+		memcpy(tr->cond.val, &val, size);
+	}
 
 	tr->cond.idx = idx;
+	tr->cond.off = off;
 	tr->cond.op = op;
-	tr->cond.val = val;
+	tr->cond.size = size;
 
 	return 0;
 }

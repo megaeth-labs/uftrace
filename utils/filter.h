@@ -4,6 +4,8 @@
 #include <regex.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 #include "utils/arch.h"
 #include "utils/argspec.h"
@@ -72,12 +74,20 @@ enum filter_cond_op {
 	FILTER_OP_GE,
 	FILTER_OP_LT,
 	FILTER_OP_LE,
+	FILTER_OP_BETWEEN,
+};
+
+struct uftrace_filter_between_cond {
+	long l;
+	long h;
 };
 
 struct uftrace_filter_cond {
 	int idx; /* argument index, 0 if disabled */
+	int off; /* byte offset for memory comparison, -1 if direct value */
+	int size; /* size of the data in bytes for memory comparison */
 	enum filter_cond_op op;
-	long val;
+	void *val; /* pointer to the value */
 };
 
 struct uftrace_trigger {
@@ -180,7 +190,7 @@ void uftrace_cleanup_triggers(struct uftrace_triggers_info *triggers);
 void uftrace_print_filter(struct rb_root *root);
 int uftrace_count_filter(struct rb_root *root, unsigned long flag);
 
-bool uftrace_eval_cond(struct uftrace_filter_cond *cond, long val);
+bool uftrace_eval_cond(struct uftrace_filter_cond *cond, void *val);
 
 void init_filter_pattern(enum uftrace_pattern_type type, struct uftrace_pattern *p, char *str);
 bool match_filter_pattern(struct uftrace_pattern *p, char *name);

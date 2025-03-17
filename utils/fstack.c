@@ -519,7 +519,7 @@ int fstack_setup_filters(struct uftrace_opts *opts, struct uftrace_data *handle)
 
 		if (setup_fstack_filters(handle, opts->filter, opts->trigger, opts->caller,
 					 opts->hide, opts->loc_filter, &setting) < 0) {
-			char * or = "";
+			char *or = "";
 			pr_use("failed to set filter or trigger: ");
 			if (opts->filter) {
 				pr_out("%s%s", or, opts->filter);
@@ -661,14 +661,14 @@ int fstack_entry(struct uftrace_task_reader *task, struct uftrace_record *rstack
 			struct list_head *arg_list = task->args.args;
 			struct uftrace_arg_spec *spec;
 			void *data = task->args.data;
-			long val = 0;
+			void *val = NULL;
 			bool found = false;
 
 			list_for_each_entry(spec, arg_list, list) {
 				int size = spec->size;
 
 				if (spec->idx == tr->cond.idx) {
-					memcpy(&val, data, spec->size);
+					val = data;
 					found = true;
 					break;
 				}
