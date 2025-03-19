@@ -222,6 +222,15 @@ static void mcount_signal_trigger(int sig)
 	}
 }
 
+static bool uftrace_eval_cond_with_context(struct uftrace_filter_cond *cond,
+					   struct mcount_arg_context *ctx)
+{
+	if (cond->off == -1) {
+		return uftrace_eval_cond(cond, &ctx->val.i);
+	}
+	return uftrace_eval_cond(cond, ctx->val.p);
+}
+
 /* clang-format off */
 #define SIGTABLE_ENTRY(s)  { #s, s }
 /* clang-format on */
@@ -1000,7 +1009,7 @@ static void mcount_save_filter(struct mcount_thread_data *mtdp)
 
 /* update filter state from trigger result */
 enum filter_result mcount_entry_filter_check(struct mcount_thread_data *mtdp, unsigned long child,
-					     struct uftrace_trigger *tr)
+					     struct uftrace_trigger *tr, struct mcount_regs *regs)
 {
 	int max_depth = mtdp->filter.max_depth;
 
@@ -1021,6 +1030,26 @@ enum filter_result mcount_entry_filter_check(struct mcount_thread_data *mtdp, un
 
 	pr_dbg3(" tr->flags: %x, filter mode: %d, count: %d/%d, depth: %d\n", tr->flags, tr->fmode,
 		mtdp->filter.in_count, mtdp->filter.out_count, mtdp->filter.depth);
+
+	if (tr->flags & TRIGGER_FL_FILTER && tr->cond.idx && regs) {
+		struct mcount_arg_context ctx;
+		struct uftrace_arg_spec spec = {
+			.idx = tr->cond.idx,
+			.fmt = ARG_FMT_AUTO,
+			.type = ARG_TYPE_INDEX,
+		};
+
+		mcount_memset4(&ctx, 0, sizeof(ctx));
+		ctx.regs = regs;
+		ctx.regions = &mtdp->mem_regions;
+		ctx.arch = &mtdp->arch;
+
+		mcount_arch_get_arg(&ctx, &spec);
+
+		/* keep the filter only if the condition is met */
+		if (!uftrace_eval_cond_with_context(&tr->cond, &ctx))
+			tr->flags &= ~TRIGGER_FL_FILTER;
+	}
 
 	if (tr->flags & TRIGGER_FL_FILTER) {
 		if (tr->fmode == FILTER_MODE_IN)
@@ -1374,7 +1403,7 @@ void mcount_exit_filter_record(struct mcount_thread_data *mtdp, struct mcount_re
  */
 
 enum filter_result mcount_entry_filter_check(struct mcount_thread_data *mtdp, unsigned long child,
-					     struct uftrace_trigger *tr)
+					     struct uftrace_trigger *tr, struct mcount_regs *regs)
 {
 	if (mcount_check_rstack(mtdp))
 		return FILTER_RSTACK;
@@ -1496,7 +1525,8 @@ static int __mcount_entry(unsigned long *parent_loc, unsigned long child, struct
 	}
 
 	tr.flags = 0;
-	filtered = mcount_entry_filter_check(mtdp, child, &tr);
+	tr.cond.idx = 0;
+	filtered = mcount_entry_filter_check(mtdp, child, &tr, regs);
 	if (filtered != FILTER_IN) {
 		mcount_unguard_recursion(mtdp);
 		return -1;
@@ -1637,7 +1667,7 @@ static int __cygprof_entry(unsigned long parent, unsigned long child)
 			return -1;
 	}
 
-	filtered = mcount_entry_filter_check(mtdp, child, &tr);
+	filtered = mcount_entry_filter_check(mtdp, child, &tr, NULL);
 
 	if (unlikely(mtdp->in_exception)) {
 		unsigned long *frame_ptr;
@@ -1784,7 +1814,7 @@ static void _xray_entry(unsigned long parent, unsigned long child, struct mcount
 			return;
 	}
 
-	filtered = mcount_entry_filter_check(mtdp, child, &tr);
+	filtered = mcount_entry_filter_check(mtdp, child, &tr, NULL);
 
 	if (unlikely(mtdp->in_exception)) {
 		unsigned long *frame_ptr;

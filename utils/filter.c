@@ -1,5 +1,6 @@
 #include <fnmatch.h>
 #include <regex.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/utsname.h>
@@ -16,6 +17,17 @@
 #include "utils/rbtree.h"
 #include "utils/symbol.h"
 #include "utils/utils.h"
+
+static void *get_pointer_data(void *ptr, int num_off, int *ptr_off)
+{
+	int i;
+	void *data = ptr;
+
+	for (i = 0; i < num_off; i++) {
+		data = *(void **)(data + ptr_off[i]);
+	}
+	return data;
+}
 
 static void snprintf_trigger_read(char *buf, size_t len, enum trigger_read_type type)
 {
@@ -36,6 +48,36 @@ static void snprintf_trigger_read(char *buf, size_t len, enum trigger_read_type 
 		snprintf(buf, len, "%s%s", buf[0] ? "|" : "", "pmu-branch");
 }
 
+static void snprintf_trigger_cond(char *buf, size_t len, struct uftrace_filter_cond *cond)
+{
+	const char *op_str[] = { "==", "!=", ">", ">=", "<", "<=" };
+
+	if (cond->off == -1) {
+		// Direct value comparison: e.g., "arg1 == 1234"
+		// cond->val is a malloc'd block of size sizeof(long)
+		long val;
+		memcpy(&val, cond->val, sizeof(long)); // Copy the value from cond->val
+		snprintf(buf, len, "arg%d %s %ld", cond->idx, op_str[cond->op], val);
+	}
+	else {
+		// Memory block comparison: e.g., "arg1+4:2 == 0x1234"
+		char hex_str[cond->size * 2 + 3]; // 2 chars per byte + "0x" + null terminator
+		unsigned char *bytes = (unsigned char *)cond->val;
+		int pos = 0;
+
+		// Build hex string: "0x" prefix followed by bytes
+		pos += snprintf(hex_str + pos, sizeof(hex_str) - pos, "0x");
+		for (int i = 0; i < cond->size; i++) {
+			pos += snprintf(hex_str + pos, sizeof(hex_str) - pos, "%02" PRIX8,
+					bytes[i]);
+		}
+
+		// Format the full condition string
+		snprintf(buf, len, "arg%d+%d:%d %s %s", cond->idx, cond->off, cond->size,
+			 op_str[cond->op], hex_str);
+	}
+}
+
 static void print_trigger(struct uftrace_trigger *tr)
 {
 	if (tr->flags & TRIGGER_FL_CLEAR)
@@ -44,9 +86,17 @@ static void print_trigger(struct uftrace_trigger *tr)
 		pr_dbg("\ttrigger: depth %d\n", tr->depth);
 	if (tr->flags & TRIGGER_FL_FILTER) {
 		if (tr->fmode == FILTER_MODE_IN)
-			pr_dbg("\ttrigger: filter IN\n");
+			pr_dbg("\ttrigger: filter IN");
 		else if (tr->fmode == FILTER_MODE_OUT)
-			pr_dbg("\ttrigger: filter OUT\n");
+			pr_dbg("\ttrigger: filter OUT");
+
+		if (tr->cond.idx) {
+			char buf[64];
+
+			snprintf_trigger_cond(buf, sizeof(buf), &tr->cond);
+			pr_dbg("\tif %s", buf);
+		}
+		pr_dbg("\n");
 	}
 	if (tr->flags & TRIGGER_FL_LOC) {
 		if (tr->lmode == FILTER_MODE_IN)
@@ -255,14 +305,18 @@ void update_trigger(struct uftrace_filter *filter, struct uftrace_trigger *tr, b
 
 	if (tr->flags & TRIGGER_FL_CLEAR) {
 		filter->trigger.flags &= ~tr->clear_flags;
-		if (tr->clear_flags & TRIGGER_FL_FILTER)
+		if (tr->clear_flags & TRIGGER_FL_FILTER) {
 			tr->fmode = filter->trigger.fmode; /* read from tree before deleting */
+			memset(&filter->trigger.cond, 0, sizeof(tr->cond));
+		}
 	}
 
 	if (tr->flags & TRIGGER_FL_DEPTH)
 		filter->trigger.depth = tr->depth;
-	if (tr->flags & TRIGGER_FL_FILTER)
+	if (tr->flags & TRIGGER_FL_FILTER) {
 		filter->trigger.fmode = tr->fmode;
+		memcpy(&filter->trigger.cond, &tr->cond, sizeof(tr->cond));
+	}
 	if (tr->flags & TRIGGER_FL_LOC)
 		filter->trigger.lmode = tr->lmode;
 
@@ -286,6 +340,53 @@ void update_trigger(struct uftrace_filter *filter, struct uftrace_trigger *tr, b
 		filter->trigger.read |= tr->read;
 	if (tr->flags & TRIGGER_FL_SIZE_FILTER)
 		filter->trigger.size = tr->size;
+}
+
+bool uftrace_eval_cond(struct uftrace_filter_cond *cond, void *val)
+{
+	switch (cond->op) {
+	case FILTER_OP_EQ:
+		return memcmp(val + cond->off, cond->val, cond->size) == 0;
+	case FILTER_OP_NE:
+		return memcmp(val + cond->off, cond->val, cond->size) != 0;
+	case FILTER_OP_GT:
+		return memcmp(val + cond->off, cond->val, cond->size) > 0;
+	case FILTER_OP_GE:
+		return memcmp(val + cond->off, cond->val, cond->size) >= 0;
+	case FILTER_OP_LT:
+		return memcmp(val + cond->off, cond->val, cond->size) < 0;
+	case FILTER_OP_LE:
+		return memcmp(val + cond->off, cond->val, cond->size) <= 0;
+	case FILTER_OP_BETWEEN: {
+		long v;
+		struct uftrace_filter_between_cond *bp = cond->val;
+		void *data = get_pointer_data(val, cond->num_off, cond->ptr_off) + cond->off;
+
+		if (cond->size == 1) {
+			uint8_t u8_v;
+			memcpy(&u8_v, data, cond->size);
+			v = (long)u8_v;
+		}
+		else if (cond->size == 2) {
+			uint16_t u16_v;
+			memcpy(&u16_v, data, sizeof(uint16_t));
+			v = (long)u16_v;
+		}
+		else if (cond->size == 4) {
+			uint32_t u32_v;
+			memcpy(&u32_v, data, sizeof(uint32_t));
+			v = (long)u32_v;
+		}
+		else {
+			uint64_t u64_v;
+			memcpy(&u64_v, data, sizeof(uint64_t));
+			v = (long)u64_v;
+		}
+		return v >= bp->l && v <= bp->h;
+	}
+	default:
+		return false;
+	}
 }
 
 /**
@@ -744,6 +845,167 @@ static int parse_hide_action(char *action, struct uftrace_trigger *tr,
 	return 0;
 }
 
+/*
+ * if:arg1==1234, single condition
+ * if:args1+0:2==0x1234, memory condition
+ * if:args1+0:2--1:2, range condition
+ * if:arg1+8+16+0:2--1:2, multi-level pointer offset with range
+ */
+static int parse_cond_action(char *action, struct uftrace_trigger *tr,
+			     struct uftrace_filter_setting *setting)
+{
+	const char *op_str[] = { "==", "!=", ">", ">=", "<", "<=", "--" };
+	const int size_list[] = { 0, 1, 1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1,
+				  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 };
+	char *expr = action + 3;
+	char *pos;
+	int idx;
+	int op = -1;
+	int off = -1; /* default direct value */
+	int size = 0;
+	int num_off = 0;
+	int *ptr_off = NULL;
+
+	if (strncmp(expr, "arg", 3)) {
+		pr_use("ignoring invalid arg: %s\n", expr);
+		return -1;
+	}
+
+	idx = strtol(expr + 3, &pos, 0);
+	if (idx < 1 || idx > 6) { /* don't support retval */
+		pr_use("only support up to 6 argument for now\n");
+		return -1;
+	}
+
+	// read the [+offset] part
+	while (*pos == '+') {
+		char *tmp;
+
+		int offset = strtol(pos + 1, &tmp, 0);
+		if (tmp == pos + 1 || offset < 0) {
+			pr_use("ignoring invalid offset: %s\n", pos + 1);
+			free(ptr_off);
+			return -1;
+		}
+		pos = tmp;
+		if ((ptr_off = realloc(ptr_off, (num_off + 1) * sizeof(int))) == NULL) {
+			pr_err("realloc failed\n");
+			free(ptr_off);
+			return -1;
+		}
+		ptr_off[num_off++] = offset;
+		if (*pos == ':')
+			break;
+	}
+
+	if (num_off > 0) {
+		num_off--;
+		off = ptr_off[num_off];
+	}
+
+	if (*pos == ':') {
+		char *tmp;
+
+		size = strtol(pos + 1, &tmp, 0);
+		if (tmp == pos + 1 || size < 0) {
+			pr_use("ignoring invalid size: %s\n", pos + 1);
+			free(ptr_off);
+			return -1;
+		}
+		pos = tmp;
+		if (size >= (int)sizeof(size_list) || size_list[size] == 0) {
+			pr_use("ignoring invalid size: %d\n", size);
+			free(ptr_off);
+			return -1;
+		}
+	}
+	else {
+		size = sizeof(long);
+	}
+
+	/* reverse order match to find "<=" before "<" */
+	for (size_t k = ARRAY_SIZE(op_str) - 1; k < ARRAY_SIZE(op_str); k--) {
+		if (strncmp(pos, op_str[k], strlen(op_str[k])))
+			continue;
+
+		op = k;
+		pos += strlen(op_str[k]);
+		break;
+	}
+	if (op == -1) {
+		pr_use("ignoring invalid op: %.3s\n", pos);
+		free(ptr_off);
+		return -1;
+	}
+
+	if ((tr->cond.val = malloc(size)) == NULL) {
+		pr_err("malloc failed\n");
+		free(ptr_off);
+		return -1;
+	}
+	if (op == FILTER_OP_BETWEEN) {
+		char *tmp;
+		long l, h;
+		struct uftrace_filter_between_cond *bp;
+
+		l = strtol(pos, &tmp, 0);
+		if (tmp == pos || l < 0) {
+			pr_use("ignoring invalid range low value: %s\n", pos);
+			free(ptr_off);
+			return -1;
+		}
+		pos = tmp;
+		if (*pos != ':') {
+			pr_use("ignoring invalid range value: %s\n", pos + 1);
+			free(ptr_off);
+			return -1;
+		}
+		h = strtol(pos + 1, &tmp, 0);
+		if (tmp == pos + 1 || h < 0) {
+			pr_use("ignoring invalid range high value: %s\n", pos + 1);
+			free(ptr_off);
+			return -1;
+		}
+		pos = tmp;
+		if ((tr->cond.val = realloc(tr->cond.val,
+					    sizeof(struct uftrace_filter_between_cond))) == NULL) {
+			pr_err("realloc failed\n");
+			free(ptr_off);
+			return -1;
+		}
+		bp = tr->cond.val;
+		bp->l = l;
+		bp->h = h;
+	}
+	else if (off >= 0) {
+		/* skip 0x prefix */
+		if (strncmp(pos, "0x", 2) == 0) {
+			pos += 2;
+		}
+		if (strlen(pos) != (size_t)size * 2) {
+			pr_use("ignoring invalid value: %s\n", pos);
+			free(ptr_off);
+			return -1;
+		}
+		for (int i = 0; i < size; i++) {
+			sscanf(pos + i * 2, "%2hhx", &((unsigned char *)tr->cond.val)[i]);
+		}
+	}
+	else {
+		long val = strtol(pos, NULL, 0);
+		memcpy(tr->cond.val, &val, size);
+	}
+
+	tr->cond.idx = idx;
+	tr->cond.off = off;
+	tr->cond.op = op;
+	tr->cond.size = size;
+	tr->cond.num_off = num_off;
+	tr->cond.ptr_off = ptr_off;
+
+	return 0;
+}
+
 static int parse_clear_action(char *action, struct uftrace_trigger *tr,
 			      struct uftrace_filter_setting *setting)
 {
@@ -894,6 +1156,11 @@ static const struct trigger_action_parser actions[] = {
 		"clear",
 		parse_clear_action,
 		TRIGGER_FL_FILTER | TRIGGER_FL_CALLER,
+	},
+	{
+		"if:",
+		parse_cond_action,
+		TRIGGER_FL_FILTER,
 	},
 };
 
@@ -2566,6 +2833,126 @@ TEST_CASE(locfilter_match)
 
 	uftrace_cleanup_triggers(&triggers);
 	TEST_EQ(RB_EMPTY_ROOT(&triggers.root), true);
+
+	return TEST_OK;
+}
+
+TEST_CASE(filter_setup_cond)
+{
+	struct uftrace_trigger tr = {};
+	struct uftrace_filter_setting setting = {};
+	char val_str_ok1[] = "foo@filter,if:arg1==1234";
+	char val_str_ok2[] = "foo@filter,if:arg2!=100";
+	char val_str_ok3[] = "foo@filter,if:arg3>=5678";
+	char val_str_ok4[] = "foo@filter,if:arg4<9876";
+	char val_str_ng1[] = "foo@filter,if:name==1234"; /* named arg not supported */
+	char val_str_ng2[] = "foo@filter,if:fparg1==1234"; /* fparg not supported */
+	char val_str_ng3[] = "foo@filter,if:arg1~=1234"; /* op not supported */
+	char val_str_ng4[] = "foo@value,if:arg-1==1234"; /* negative arg index */
+	FILE *null_fp = fopen("/dev/null", "w");
+	FILE *saved_fp = outfp;
+
+	pr_dbg("check filter cond: %s\n", val_str_ok1);
+	TEST_EQ(setup_trigger_action(val_str_ok1, &tr, NULL, 0, &setting), 0);
+	TEST_EQ(tr.cond.idx, 1);
+	TEST_EQ(tr.cond.op, FILTER_OP_EQ);
+	TEST_EQ(tr.cond.val, 1234);
+
+	pr_dbg("check filter cond: %s\n", val_str_ok2);
+	TEST_EQ(setup_trigger_action(val_str_ok2, &tr, NULL, 0, &setting), 0);
+	TEST_EQ(tr.cond.idx, 2);
+	TEST_EQ(tr.cond.op, FILTER_OP_NE);
+	TEST_EQ(tr.cond.val, 100);
+
+	pr_dbg("check filter cond: %s\n", val_str_ok3);
+	TEST_EQ(setup_trigger_action(val_str_ok3, &tr, NULL, 0, &setting), 0);
+	TEST_EQ(tr.cond.idx, 3);
+	TEST_EQ(tr.cond.op, FILTER_OP_GE);
+	TEST_EQ(tr.cond.val, 5678);
+
+	pr_dbg("check filter cond: %s\n", val_str_ok4);
+	TEST_EQ(setup_trigger_action(val_str_ok4, &tr, NULL, 0, &setting), 0);
+	TEST_EQ(tr.cond.idx, 4);
+	TEST_EQ(tr.cond.op, FILTER_OP_LT);
+	TEST_EQ(tr.cond.val, 9876);
+
+	memset(&tr, 0, sizeof(tr));
+	/* suppress usage error messages */
+	if (!debug)
+		outfp = null_fp;
+
+	TEST_NE(setup_trigger_action(val_str_ng1, &tr, NULL, 0, &setting), 0);
+	TEST_NE(setup_trigger_action(val_str_ng2, &tr, NULL, 0, &setting), 0);
+	TEST_NE(setup_trigger_action(val_str_ng3, &tr, NULL, 0, &setting), 0);
+	TEST_NE(setup_trigger_action(val_str_ng4, &tr, NULL, 0, &setting), 0);
+
+	if (!debug)
+		outfp = saved_fp;
+
+	/* failed function should not set any fields */
+	TEST_EQ(tr.cond.idx, 0);
+	TEST_EQ(tr.cond.op, 0);
+	TEST_EQ(tr.cond.val, 0);
+
+	return TEST_OK;
+}
+
+TEST_CASE(filter_eval_cond)
+{
+	struct uftrace_filter_cond cond;
+
+	pr_dbg("check filter cond: arg == 1\n");
+	cond.op = FILTER_OP_EQ;
+	cond.val = 1;
+
+	TEST_EQ(uftrace_eval_cond(&cond, 1), true);
+	TEST_EQ(uftrace_eval_cond(&cond, 2), false);
+
+	pr_dbg("check filter cond: arg == -1\n");
+	cond.op = FILTER_OP_EQ;
+	cond.val = -1;
+
+	TEST_EQ(uftrace_eval_cond(&cond, 1), false);
+	TEST_EQ(uftrace_eval_cond(&cond, -1), true);
+
+	pr_dbg("check filter cond: arg != 1\n");
+	cond.op = FILTER_OP_NE;
+	cond.val = 1;
+
+	TEST_EQ(uftrace_eval_cond(&cond, 1), false);
+	TEST_EQ(uftrace_eval_cond(&cond, 0), true);
+
+	pr_dbg("check filter cond: arg > 10\n");
+	cond.op = FILTER_OP_GT;
+	cond.val = 10;
+
+	TEST_EQ(uftrace_eval_cond(&cond, 11), true);
+	TEST_EQ(uftrace_eval_cond(&cond, 10), false);
+	TEST_EQ(uftrace_eval_cond(&cond, -1), false);
+
+	pr_dbg("check filter cond: arg >= 10\n");
+	cond.op = FILTER_OP_GE;
+	cond.val = 10;
+
+	TEST_EQ(uftrace_eval_cond(&cond, 11), true);
+	TEST_EQ(uftrace_eval_cond(&cond, 10), true);
+	TEST_EQ(uftrace_eval_cond(&cond, 9), false);
+
+	pr_dbg("check filter cond: arg < 0\n");
+	cond.op = FILTER_OP_LT;
+	cond.val = 0;
+
+	TEST_EQ(uftrace_eval_cond(&cond, 1), false);
+	TEST_EQ(uftrace_eval_cond(&cond, 0), false);
+	TEST_EQ(uftrace_eval_cond(&cond, -1), true);
+
+	pr_dbg("check filter cond: arg <= 0\n");
+	cond.op = FILTER_OP_LE;
+	cond.val = 0;
+
+	TEST_EQ(uftrace_eval_cond(&cond, 1), false);
+	TEST_EQ(uftrace_eval_cond(&cond, 0), true);
+	TEST_EQ(uftrace_eval_cond(&cond, -1), true);
 
 	return TEST_OK;
 }
