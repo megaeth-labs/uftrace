@@ -1,5 +1,6 @@
 #include <fnmatch.h>
 #include <regex.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/utsname.h>
@@ -16,6 +17,17 @@
 #include "utils/rbtree.h"
 #include "utils/symbol.h"
 #include "utils/utils.h"
+
+static void *get_pointer_data(void *ptr, int num_off, int *ptr_off)
+{
+	int i;
+	void *data = ptr;
+
+	for (i = 0; i < num_off; i++) {
+		data = *(void **)(data + ptr_off[i]);
+	}
+	return data;
+}
 
 static void snprintf_trigger_read(char *buf, size_t len, enum trigger_read_type type)
 {
@@ -348,8 +360,28 @@ bool uftrace_eval_cond(struct uftrace_filter_cond *cond, void *val)
 	case FILTER_OP_BETWEEN: {
 		long v;
 		struct uftrace_filter_between_cond *bp = cond->val;
+		void *data = get_pointer_data(val, cond->num_off, cond->ptr_off) + cond->off;
 
-		memcpy(&v, val + cond->off, sizeof(long));
+		if (cond->size == 1) {
+			uint8_t u8_v;
+			memcpy(&u8_v, data, cond->size);
+			v = (long)u8_v;
+		}
+		else if (cond->size == 2) {
+			uint16_t u16_v;
+			memcpy(&u16_v, data, sizeof(uint16_t));
+			v = (long)u16_v;
+		}
+		else if (cond->size == 4) {
+			uint32_t u32_v;
+			memcpy(&u32_v, data, sizeof(uint32_t));
+			v = (long)u32_v;
+		}
+		else {
+			uint64_t u64_v;
+			memcpy(&u64_v, data, sizeof(uint64_t));
+			v = (long)u64_v;
+		}
 		return v >= bp->l && v <= bp->h;
 	}
 	default:
@@ -816,18 +848,23 @@ static int parse_hide_action(char *action, struct uftrace_trigger *tr,
 /*
  * if:arg1==1234, single condition
  * if:args1+0:2==0x1234, memory condition
- * if:args1+0:2<>1:2, range condition
+ * if:args1+0:2--1:2, range condition
+ * if:arg1+8+16+0:2--1:2, multi-level pointer offset with range
  */
 static int parse_cond_action(char *action, struct uftrace_trigger *tr,
 			     struct uftrace_filter_setting *setting)
 {
 	const char *op_str[] = { "==", "!=", ">", ">=", "<", "<=", "--" };
+	const int size_list[] = { 0, 1, 1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1,
+				  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 };
 	char *expr = action + 3;
 	char *pos;
 	int idx;
 	int op = -1;
 	int off = -1; /* default direct value */
 	int size = 0;
+	int num_off = 0;
+	int *ptr_off = NULL;
 
 	if (strncmp(expr, "arg", 3)) {
 		pr_use("ignoring invalid arg: %s\n", expr);
@@ -840,26 +877,47 @@ static int parse_cond_action(char *action, struct uftrace_trigger *tr,
 		return -1;
 	}
 
-	/* check for optional "+offset:size" syntax */
-	if (*pos == '+') {
+	// read the [+offset] part
+	while (*pos == '+') {
 		char *tmp;
 
-		off = strtol(pos + 1, &tmp, 0);
-		if (tmp == pos + 1 || off < 0) {
+		int offset = strtol(pos + 1, &tmp, 0);
+		if (tmp == pos + 1 || offset < 0) {
 			pr_use("ignoring invalid offset: %s\n", pos + 1);
+			free(ptr_off);
 			return -1;
 		}
 		pos = tmp;
-		if (*pos != ':') {
-			pr_use("ignoring invalid size: %s\n", pos + 1);
+		if ((ptr_off = realloc(ptr_off, (num_off + 1) * sizeof(int))) == NULL) {
+			pr_err("realloc failed\n");
+			free(ptr_off);
 			return -1;
 		}
+		ptr_off[num_off++] = offset;
+		if (*pos == ':')
+			break;
+	}
+
+	if (num_off > 0) {
+		num_off--;
+		off = ptr_off[num_off];
+	}
+
+	if (*pos == ':') {
+		char *tmp;
+
 		size = strtol(pos + 1, &tmp, 0);
 		if (tmp == pos + 1 || size < 0) {
 			pr_use("ignoring invalid size: %s\n", pos + 1);
+			free(ptr_off);
 			return -1;
 		}
 		pos = tmp;
+		if (size >= (int)sizeof(size_list) || size_list[size] == 0) {
+			pr_use("ignoring invalid size: %d\n", size);
+			free(ptr_off);
+			return -1;
+		}
 	}
 	else {
 		size = sizeof(long);
@@ -876,11 +934,13 @@ static int parse_cond_action(char *action, struct uftrace_trigger *tr,
 	}
 	if (op == -1) {
 		pr_use("ignoring invalid op: %.3s\n", pos);
+		free(ptr_off);
 		return -1;
 	}
 
 	if ((tr->cond.val = malloc(size)) == NULL) {
 		pr_err("malloc failed\n");
+		free(ptr_off);
 		return -1;
 	}
 	if (op == FILTER_OP_BETWEEN) {
@@ -891,22 +951,26 @@ static int parse_cond_action(char *action, struct uftrace_trigger *tr,
 		l = strtol(pos, &tmp, 0);
 		if (tmp == pos || l < 0) {
 			pr_use("ignoring invalid range low value: %s\n", pos);
+			free(ptr_off);
 			return -1;
 		}
 		pos = tmp;
 		if (*pos != ':') {
 			pr_use("ignoring invalid range value: %s\n", pos + 1);
+			free(ptr_off);
 			return -1;
 		}
 		h = strtol(pos + 1, &tmp, 0);
 		if (tmp == pos + 1 || h < 0) {
 			pr_use("ignoring invalid range high value: %s\n", pos + 1);
+			free(ptr_off);
 			return -1;
 		}
 		pos = tmp;
 		if ((tr->cond.val = realloc(tr->cond.val,
 					    sizeof(struct uftrace_filter_between_cond))) == NULL) {
 			pr_err("realloc failed\n");
+			free(ptr_off);
 			return -1;
 		}
 		bp = tr->cond.val;
@@ -920,6 +984,7 @@ static int parse_cond_action(char *action, struct uftrace_trigger *tr,
 		}
 		if (strlen(pos) != (size_t)size * 2) {
 			pr_use("ignoring invalid value: %s\n", pos);
+			free(ptr_off);
 			return -1;
 		}
 		for (int i = 0; i < size; i++) {
@@ -935,6 +1000,8 @@ static int parse_cond_action(char *action, struct uftrace_trigger *tr,
 	tr->cond.off = off;
 	tr->cond.op = op;
 	tr->cond.size = size;
+	tr->cond.num_off = num_off;
+	tr->cond.ptr_off = ptr_off;
 
 	return 0;
 }

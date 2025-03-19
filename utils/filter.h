@@ -87,6 +87,8 @@ struct uftrace_filter_cond {
 	int off; /* byte offset for memory comparison, -1 if direct value */
 	int size; /* size of the data in bytes for memory comparison */
 	enum filter_cond_op op;
+	int num_off; // number of pointer offsets
+	int *ptr_off; // array of pointer offsets
 	void *val; /* pointer to the value */
 };
 
