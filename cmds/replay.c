@@ -32,7 +32,7 @@ static void print_duration(struct field_data *fd)
 	if (fstack && arg == NULL)
 		d = fstack->total_time;
 
-	print_time_unit(d);
+	print_time_unit(d * 1000 / tsc_freq_mhz);
 }
 
 static void print_tid(struct field_data *fd)
@@ -496,11 +496,11 @@ void get_argspec_string(struct uftrace_task_reader *task, char *args, size_t len
 			if (val.i > 100000L || val.i < -100000L) {
 				fmt = 'x';
 				/*
-				 * Show small negative integers naturally
-				 * on 64-bit systems.  The conversion is
-				 * required to avoid compiler warnings
-				 * on 32-bit systems.
-				 */
+         * Show small negative integers naturally
+         * on 64-bit systems.  The conversion is
+         * required to avoid compiler warnings
+         * on 32-bit systems.
+         */
 				if (sizeof(long) == sizeof(uint64_t)) {
 					uint64_t val64 = val.i;
 
@@ -560,9 +560,9 @@ void get_argspec_string(struct uftrace_task_reader *task, char *args, size_t len
 					}
 				}
 				/*
-				* if value of character is over than 128(0x80),
-				* then it will be UTF-8 string
-				*/
+         * if value of character is over than 128(0x80),
+         * then it will be UTF-8 string
+         */
 				if (*p) {
 					print_args(&args, &len, "%.*s", slen, str);
 				}
@@ -685,9 +685,9 @@ void get_argspec_string(struct uftrace_task_reader *task, char *args, size_t len
 		else if (spec->fmt == ARG_FMT_STRUCT) {
 			if (spec->type_name) {
 				/*
-				 * gcc puts "<lambda" to anonymous lambda
-				 * but let's ignore to make it same as clang.
-				 */
+         * gcc puts "<lambda" to anonymous lambda
+         * but let's ignore to make it same as clang.
+         */
 				if (strcmp(spec->type_name, "<lambda")) {
 					print_args(&args, &len, "%s%s%s", color_struct,
 						   spec->type_name, color_reset);
@@ -960,9 +960,9 @@ lost:
 		depth += task_column_depth(task, opts);
 
 		/*
-		 * try to merge a subsequent sched-in event:
-		 * it might overwrite rstack - use (saved) rec for printing.
-		 */
+     * try to merge a subsequent sched-in event:
+     * it might overwrite rstack - use (saved) rec for printing.
+     */
 		if ((evt_id == EVENT_ID_PERF_SCHED_OUT ||
 		     evt_id == EVENT_ID_PERF_SCHED_OUT_PREEMPT) &&
 		    !opts->no_merge)
@@ -1176,10 +1176,10 @@ int command_replay(int argc, char *argv[], struct uftrace_opts *opts)
 			continue;
 
 		/*
-		 * data sanity check: timestamp should be ordered.
-		 * But print_graph_rstack() may change task->rstack
-		 * during fstack_skip().  So check the timestamp here.
-		 */
+     * data sanity check: timestamp should be ordered.
+     * But print_graph_rstack() may change task->rstack
+     * during fstack_skip().  So check the timestamp here.
+     */
 		if (curr_time) {
 			if (prev_time > curr_time)
 				print_warning(task);
@@ -1258,10 +1258,10 @@ TEST_CASE(replay_command)
 		       rstack->depth, record_type_str(rstack));
 
 		/*
-		 * data sanity check: timestamp should be ordered.
-		 * But print_graph_rstack() may change task->rstack
-		 * during fstack_skip().  So check the timestamp here.
-		 */
+     * data sanity check: timestamp should be ordered.
+     * But print_graph_rstack() may change task->rstack
+     * during fstack_skip().  So check the timestamp here.
+     */
 		if (curr_time) {
 			if (prev_time > curr_time)
 				print_warning(task);

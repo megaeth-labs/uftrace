@@ -245,9 +245,7 @@ mcount_trigger_init(struct uftrace_filter_setting *filter_setting)
 
 static inline uint64_t mcount_gettime(void)
 {
-	struct timespec ts;
-	clock_gettime(clock_source, &ts);
-	return (uint64_t)ts.tv_sec * NSEC_PER_SEC + ts.tv_nsec;
+	return rdtsc();
 }
 
 static inline unsigned mcount_getsize(struct uftrace_sym_info *sinfo, uint64_t addr)

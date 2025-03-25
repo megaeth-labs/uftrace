@@ -35,6 +35,8 @@
 #include "utils/utils.h"
 #include "version.h"
 
+uint64_t tsc_freq_mhz;
+
 static const char uftrace_version[] = "uftrace " UFTRACE_VERSION;
 
 static bool dbg_domain_set = false;
@@ -354,6 +356,24 @@ static const struct option uftrace_options[] = {
 #undef REQ_ARG
 #undef NO_ARG
 
+static void measure_tsc_freq(void)
+{
+	double elapsed_sec;
+	struct timespec start, end;
+	uint64_t tsc_start, tsc_end;
+
+	struct timespec sleep_time = { 1, 0 }; // 1s
+	clock_gettime(CLOCK_MONOTONIC, &start);
+	tsc_start = rdtsc();
+	nanosleep(&sleep_time, NULL);
+	clock_gettime(CLOCK_MONOTONIC, &end);
+	tsc_end = rdtsc();
+
+	elapsed_sec = (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9;
+
+	tsc_freq_mhz = (uint64_t)((tsc_end - tsc_start) / (elapsed_sec * 1e6));
+}
+
 static unsigned long parse_size(char *str)
 {
 	unsigned long size;
@@ -609,9 +629,9 @@ static int parse_option(struct uftrace_opts *opts, int key, char *arg)
 	case 'C':
 		opts->caller = opt_add_string(opts->caller, arg);
 		/*
-		 * caller filter focuses onto a given function,
-		 * displaying sched event with it is annoying.
-		 */
+     * caller filter focuses onto a given function,
+     * displaying sched event with it is annoying.
+     */
 		opts->no_sched = true;
 		break;
 
@@ -632,9 +652,9 @@ static int parse_option(struct uftrace_opts *opts, int key, char *arg)
 			opts->loc_filter = opt_add_prefix_string(opts->loc_filter, "!", arg);
 		}
 		/*
-		 * location filter focuses onto a given location,
-		 * displaying sched event with it is annoying.
-		 */
+     * location filter focuses onto a given location,
+     * displaying sched event with it is annoying.
+     */
 		opts->no_sched = true;
 		break;
 
@@ -1431,6 +1451,8 @@ int main(int argc, char *argv[])
 		pr_out(uftrace_footer);
 		return 0;
 	}
+
+	measure_tsc_freq();
 
 	switch (parse_options(argc, argv, &opts)) {
 	case -1:

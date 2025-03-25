@@ -316,7 +316,16 @@ struct uftrace_opts {
 	enum uftrace_trace_state trace;
 };
 
+extern uint64_t tsc_freq_mhz;
+
 extern struct strv default_opts;
+
+static inline uint64_t rdtsc(void)
+{
+	unsigned int lo, hi;
+	__asm__ __volatile__("rdtsc" : "=a"(lo), "=d"(hi));
+	return ((uint64_t)hi << 32) | lo;
+}
 
 static inline bool opts_has_filter(struct uftrace_opts *opts)
 {
