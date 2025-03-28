@@ -238,6 +238,7 @@ static void print_time(uint64_t ntime)
 	uint64_t fract;
 	unsigned idx;
 
+	ntime = ntime * 1000 / tsc_freq_mhz;
 	if (ntime == 0UL) {
 		printw("%7s %2s", "", "");
 		return;

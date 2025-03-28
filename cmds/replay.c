@@ -32,7 +32,7 @@ static void print_duration(struct field_data *fd)
 	if (fstack && arg == NULL)
 		d = fstack->total_time;
 
-	print_time_unit(d * 1000 / tsc_freq_mhz);
+	print_time_unit(d);
 }
 
 static void print_tid(struct field_data *fd)
