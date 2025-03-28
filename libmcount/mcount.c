@@ -77,7 +77,7 @@ pthread_key_t mtd_key = (pthread_key_t)-1;
  * Also TSD provides destructor so it can release the resources when the thread
  * exits.
  */
-TLS struct mcount_thread_data mtd;
+TLS struct mcount_thread_data mtd __attribute__((tls_model("initial-exec"))) = { 0 };
 
 /* pipe file descriptor to communite to uftrace */
 int mcount_pfd = -1;
@@ -776,14 +776,6 @@ void __mcount_unguard_recursion(struct mcount_thread_data *mtdp)
 
 bool mcount_guard_recursion(struct mcount_thread_data *mtdp)
 {
-	if (unlikely(mtdp->recursion_marker))
-		return false;
-
-	if (unlikely(mcount_should_stop())) {
-		mtd_dtor(mtdp);
-		return false;
-	}
-
 	mtdp->recursion_marker = true;
 	return true;
 }
@@ -791,9 +783,6 @@ bool mcount_guard_recursion(struct mcount_thread_data *mtdp)
 void mcount_unguard_recursion(struct mcount_thread_data *mtdp)
 {
 	mtdp->recursion_marker = false;
-
-	if (unlikely(mcount_should_stop()))
-		mtd_dtor(mtdp);
 }
 
 static struct sigaction old_sigact[2];
@@ -941,6 +930,22 @@ struct mcount_thread_data *mcount_prepare(void)
 	return mtdp;
 }
 
+static void mcount_init_prepare(void)
+{
+	struct uftrace_msg_task tmsg;
+
+	compiler_barrier();
+	mcount_filter_setup(&mtd);
+	mtd.rstack = xmalloc(mcount_rstack_max * sizeof(*mtd.rstack));
+	mcount_init_file();
+	prepare_shmem_buffer(&mtd);
+	tmsg.pid = getpid(), tmsg.tid = mcount_gettid(&mtd), tmsg.time = mcount_gettime();
+
+	uftrace_send_message(UFTRACE_MSG_TASK_START, &tmsg, sizeof(tmsg));
+
+	update_kernel_tid(tmsg.tid);
+}
+
 static void mcount_finish(void)
 {
 	if (!mcount_should_stop())
@@ -1016,7 +1021,6 @@ enum filter_result mcount_entry_filter_check(struct mcount_thread_data *mtdp, un
 	if (max_depth == FILTER_NO_MAX_DEPTH)
 		max_depth = mcount_depth;
 
-	pr_dbg3("<%d> enter %lx\n", mtdp->idx, child);
 	if (mcount_check_rstack(mtdp))
 		return FILTER_RSTACK;
 
@@ -1027,9 +1031,6 @@ enum filter_result mcount_entry_filter_check(struct mcount_thread_data *mtdp, un
 		return FILTER_OUT;
 
 	uftrace_match_filter(child, &mcount_triggers->root, tr);
-
-	pr_dbg3(" tr->flags: %x, filter mode: %d, count: %d/%d, depth: %d\n", tr->flags, tr->fmode,
-		mtdp->filter.in_count, mtdp->filter.out_count, mtdp->filter.depth);
 
 	if (tr->flags & TRIGGER_FL_FILTER && tr->cond.idx && regs) {
 		struct mcount_arg_context ctx;
@@ -1065,37 +1066,6 @@ enum filter_result mcount_entry_filter_check(struct mcount_thread_data *mtdp, un
 		if (mcount_get_filter_mode() == FILTER_MODE_IN && mtdp->filter.in_count == 0)
 			return FILTER_OUT;
 	}
-
-	if (tr->flags & TRIGGER_FL_LOC) {
-		if (tr->lmode == FILTER_MODE_OUT)
-			return FILTER_OUT;
-	}
-	else {
-		if (mcount_get_loc_mode() == FILTER_MODE_IN)
-			return FILTER_OUT;
-	}
-
-#define FLAGS_TO_CHECK                                                                             \
-	(TRIGGER_FL_DEPTH | TRIGGER_FL_TRACE_ON | TRIGGER_FL_TRACE_OFF | TRIGGER_FL_TIME_FILTER |  \
-	 TRIGGER_FL_SIZE_FILTER)
-	if (tr->flags & FLAGS_TO_CHECK) {
-		if (tr->flags & TRIGGER_FL_DEPTH) {
-			mtdp->filter.depth = 0;
-			mtdp->filter.max_depth = max_depth = tr->depth;
-		}
-		if (tr->flags & TRIGGER_FL_TRACE_ON)
-			mcount_enabled = true;
-		if (tr->flags & TRIGGER_FL_TRACE_OFF)
-			mcount_enabled = false;
-
-		if (tr->flags & TRIGGER_FL_TIME_FILTER)
-			mtdp->filter.time = tr->time;
-
-		if (tr->flags & TRIGGER_FL_SIZE_FILTER)
-			mtdp->filter.size = tr->size;
-	}
-
-#undef FLAGS_TO_CHECK
 
 	if (mtdp->filter.depth >= max_depth)
 		return FILTER_OUT;
@@ -1193,106 +1163,14 @@ static void filter_save_to_rstack(struct mcount_thread_data *mtdp, struct mcount
 void mcount_entry_filter_record(struct mcount_thread_data *mtdp, struct mcount_ret_stack *rstack,
 				struct uftrace_trigger *tr, struct mcount_regs *regs)
 {
-	if (mtdp->filter.out_count > 0 ||
-	    (mtdp->filter.in_count == 0 && mcount_get_filter_mode() == FILTER_MODE_IN) ||
-	    (mtdp->filter.size > 0 &&
-	     mcount_getsize(&mcount_sym_info, rstack->child_ip) < mtdp->filter.size))
-		rstack->flags |= MCOUNT_FL_NORECORD;
-
 	filter_save_to_rstack(mtdp, rstack);
-
-#define FLAGS_TO_CHECK                                                                             \
-	(TRIGGER_FL_FILTER | TRIGGER_FL_RETVAL | TRIGGER_FL_TRACE | TRIGGER_FL_FINISH |            \
-	 TRIGGER_FL_CALLER)
-
-	if (tr->flags & FLAGS_TO_CHECK) {
-		if (tr->flags & TRIGGER_FL_FILTER) {
-			if (tr->fmode == FILTER_MODE_IN)
-				rstack->flags |= MCOUNT_FL_FILTERED;
-			else
-				rstack->flags |= MCOUNT_FL_NOTRACE;
-		}
-
-		/* check if it has to keep arg_spec for retval */
-		if (tr->flags & TRIGGER_FL_RETVAL) {
-			rstack->pargs = tr->pargs;
-			rstack->flags |= MCOUNT_FL_RETVAL;
-		}
-
-		if (tr->flags & TRIGGER_FL_TRACE)
-			rstack->flags |= MCOUNT_FL_TRACE;
-
-		if (tr->flags & TRIGGER_FL_CALLER)
-			rstack->flags |= MCOUNT_FL_CALLER;
-
-		if (tr->flags & TRIGGER_FL_FINISH) {
-			record_trace_data(mtdp, rstack, NULL);
-			mcount_finish_trigger();
-			return;
-		}
+	if (tr->flags & TRIGGER_FL_FILTER) {
+		if (tr->fmode == FILTER_MODE_IN)
+			rstack->flags |= MCOUNT_FL_FILTERED;
+		else
+			rstack->flags |= MCOUNT_FL_NOTRACE;
 	}
-
-#undef FLAGS_TO_CHECK
-
-	if (!(rstack->flags & MCOUNT_FL_NORECORD)) {
-		mtdp->record_idx++;
-
-		if (!mcount_enabled) {
-			rstack->flags |= MCOUNT_FL_DISABLED;
-			/*
-			 * Flush existing rstack when mcount_enabled is off
-			 * (i.e. disabled).  Note that changing to enabled is
-			 * already handled in record_trace_data() on exit path
-			 * using the MCOUNT_FL_DISABLED flag.
-			 */
-			if (unlikely(mtdp->enable_cached))
-				record_trace_data(mtdp, rstack, NULL);
-		}
-		else {
-			if (tr->flags & TRIGGER_FL_ARGUMENT)
-				save_argument(mtdp, rstack, tr->pargs, regs);
-			if (tr->flags & TRIGGER_FL_READ) {
-				save_trigger_read(mtdp, rstack, tr->read, false);
-				rstack->flags |= MCOUNT_FL_READ;
-			}
-			if (mcount_watchpoints)
-				save_watchpoint(mtdp, rstack, mcount_watchpoints);
-
-			if (mtdp->nr_events) {
-				bool flush = false;
-				int i;
-
-				/*
-				 * Flush rstacks if async event was recorded
-				 * as it only has limited space for the events.
-				 */
-				for (i = 0; i < mtdp->nr_events; i++)
-					if (mtdp->event[i].idx == ASYNC_IDX)
-						flush = true;
-
-				if (flush)
-					record_trace_data(mtdp, rstack, NULL);
-			}
-		}
-
-		/* script hooking for function entry */
-		if (SCRIPT_ENABLED && script_str)
-			script_hook_entry(mtdp, rstack, tr);
-
-#define FLAGS_TO_CHECK (TRIGGER_FL_RECOVER | TRIGGER_FL_TRACE_ON | TRIGGER_FL_TRACE_OFF)
-
-		if (tr->flags & FLAGS_TO_CHECK) {
-			if ((tr->flags & TRIGGER_FL_RECOVER) && !mcount_estimate_return) {
-				mcount_rstack_restore(mtdp);
-				*rstack->parent_loc = mcount_return_fn;
-				rstack->flags |= MCOUNT_FL_RECOVER;
-			}
-			if (tr->flags & (TRIGGER_FL_TRACE_ON | TRIGGER_FL_TRACE_OFF))
-				mtdp->enable_cached = mcount_enabled;
-		}
-	}
-
-#undef FLAGS_TO_CHECK
+	return;
 }
 
 /**
@@ -1311,26 +1189,10 @@ static void filter_restore_from_rstack(struct mcount_thread_data *mtdp,
 void mcount_exit_filter_record(struct mcount_thread_data *mtdp, struct mcount_ret_stack *rstack,
 			       long *retval)
 {
-	uint64_t time_filter = mtdp->filter.time;
-
-	if (time_filter == FILTER_NO_TIME)
-		time_filter = mcount_threshold;
-
-	pr_dbg3("<%d> exit  %lx\n", mtdp->idx, rstack->child_ip);
-
-#define FLAGS_TO_CHECK (MCOUNT_FL_FILTERED | MCOUNT_FL_NOTRACE | MCOUNT_FL_RECOVER)
-
-	if (rstack->flags & FLAGS_TO_CHECK) {
-		if (rstack->flags & MCOUNT_FL_FILTERED)
-			mtdp->filter.in_count--;
-		else if (rstack->flags & MCOUNT_FL_NOTRACE)
-			mtdp->filter.out_count--;
-
-		if (rstack->flags & MCOUNT_FL_RECOVER)
-			mcount_rstack_rehook(mtdp);
-	}
-
-#undef FLAGS_TO_CHECK
+	if (rstack->flags & MCOUNT_FL_FILTERED)
+		mtdp->filter.in_count--;
+	else if (rstack->flags & MCOUNT_FL_NOTRACE)
+		mtdp->filter.out_count--;
 
 	filter_restore_from_rstack(mtdp, rstack);
 
@@ -1341,59 +1203,13 @@ void mcount_exit_filter_record(struct mcount_thread_data *mtdp, struct mcount_re
 		if (!mcount_enabled)
 			return;
 
-		if (rstack->flags & MCOUNT_FL_RETVAL) {
-			struct uftrace_trigger tr;
+		retval = NULL;
 
-			/* update args as trigger might be updated due to dlopen() */
-			uftrace_match_filter(rstack->child_ip, &mcount_triggers->root, &tr);
-			rstack->pargs = tr.pargs;
-		}
-		else {
-			retval = NULL;
-		}
-
-		if (rstack->flags & MCOUNT_FL_READ) {
-			struct uftrace_trigger tr;
-
-			/* there's a possibility of overwriting by return value */
-			uftrace_match_filter(rstack->child_ip, &mcount_triggers->root, &tr);
-			save_trigger_read(mtdp, rstack, tr.read, true);
-		}
-
-		if (mcount_watchpoints)
-			save_watchpoint(mtdp, rstack, mcount_watchpoints);
-
-		if (((rstack->end_time - rstack->start_time > time_filter) &&
-		     (!mcount_triggers->caller_count || rstack->flags & MCOUNT_FL_CALLER)) ||
+		if (((!mcount_triggers->caller_count || rstack->flags & MCOUNT_FL_CALLER)) ||
 		    rstack->flags & (MCOUNT_FL_WRITTEN | MCOUNT_FL_TRACE)) {
 			if (record_trace_data(mtdp, rstack, retval) < 0)
 				pr_err("error during record");
 		}
-		else if (mtdp->nr_events) {
-			bool flush = false;
-			int i, k;
-
-			/*
-			 * Record rstacks if async event was recorded
-			 * in the middle of the function.  Otherwise
-			 * update event count to drop filtered ones.
-			 */
-			for (i = 0, k = 0; i < mtdp->nr_events; i++) {
-				if (mtdp->event[i].idx == ASYNC_IDX)
-					flush = true;
-				if (mtdp->event[i].idx < mtdp->idx)
-					k = i + 1;
-			}
-
-			if (flush)
-				record_trace_data(mtdp, rstack, retval);
-			else
-				mtdp->nr_events = k; /* invalidate sync events */
-		}
-
-		/* script hooking for function exit */
-		if (SCRIPT_ENABLED && script_str)
-			script_hook_exit(mtdp, rstack);
 	}
 }
 
@@ -1511,18 +1327,11 @@ static int __mcount_entry(unsigned long *parent_loc, unsigned long child, struct
 	struct mcount_thread_data *mtdp;
 	struct mcount_ret_stack *rstack;
 	struct uftrace_trigger tr;
+	static pthread_once_t once_control = PTHREAD_ONCE_INIT;
 
-	/* Access the mtd through TSD pointer to reduce TLS overhead */
-	mtdp = get_thread_data();
-	if (unlikely(check_thread_data(mtdp))) {
-		mtdp = mcount_prepare();
-		if (mtdp == NULL)
-			return -1;
-	}
-	else {
-		if (!mcount_guard_recursion(mtdp))
-			return -1;
-	}
+	pthread_once(&once_control, mcount_init_prepare);
+	mtdp = &mtd;
+	mcount_guard_recursion(mtdp);
 
 	tr.flags = 0;
 	tr.cond.idx = 0;
@@ -1532,26 +1341,6 @@ static int __mcount_entry(unsigned long *parent_loc, unsigned long child, struct
 		return -1;
 	}
 
-	if (unlikely(mtdp->in_exception)) {
-		unsigned long frame_addr;
-
-		/* same as __builtin_frame_addr(2) but avoid warning */
-		frame_addr = parent_loc[-1];
-
-		/* basic sanity check */
-		if (frame_addr < (unsigned long)parent_loc)
-			frame_addr = (unsigned long)(parent_loc - 1);
-
-		mcount_rstack_rehook_exception(mtdp, frame_addr);
-		mtdp->in_exception = false;
-	}
-
-	/* fixup the parent_loc in an arch-dependant way (if needed) */
-	parent_loc = mcount_arch_parent_location(&mcount_sym_info, parent_loc, child);
-
-	if (mcount_estimate_return)
-		mcount_rstack_inject_return(mtdp, parent_loc, child);
-
 	rstack = &mtdp->rstack[mtdp->idx++];
 
 	rstack->depth = mtdp->record_idx;
@@ -1559,13 +1348,12 @@ static int __mcount_entry(unsigned long *parent_loc, unsigned long child, struct
 	rstack->parent_loc = parent_loc;
 	rstack->parent_ip = *parent_loc;
 	rstack->child_ip = child;
-	rstack->start_time = mcount_gettime();
 	rstack->end_time = 0;
 	rstack->flags = 0;
 	rstack->nr_events = 0;
 	rstack->event_idx = ARGBUF_SIZE;
 
-	if (!mcount_estimate_return) {
+	{
 		/* hijack the return address of child */
 		*parent_loc = mcount_return_fn;
 
@@ -1576,6 +1364,7 @@ static int __mcount_entry(unsigned long *parent_loc, unsigned long child, struct
 
 	mcount_entry_filter_record(mtdp, rstack, &tr, regs);
 	mcount_unguard_recursion(mtdp);
+	rstack->start_time = mcount_gettime();
 	return 0;
 }
 
@@ -1592,13 +1381,12 @@ static unsigned long __mcount_exit(long *retval)
 {
 	struct mcount_thread_data *mtdp;
 	struct mcount_ret_stack *rstack;
-	unsigned long *ret_loc;
 	unsigned long retaddr;
 
 	mtdp = get_thread_data();
-	ASSERT(mtdp != NULL);
-	ASSERT(!mtdp->dead);
 
+	rstack = &mtdp->rstack[mtdp->idx - 1];
+	rstack->end_time = mcount_gettime();
 	/*
 	 * it's only called when mcount_entry() was succeeded and
 	 * no need to check recursion here.  But still needs to
@@ -1606,12 +1394,8 @@ static unsigned long __mcount_exit(long *retval)
 	 */
 	__mcount_guard_recursion(mtdp);
 
-	rstack = &mtdp->rstack[mtdp->idx - 1];
-
-	rstack->end_time = mcount_gettime();
 	mcount_exit_filter_record(mtdp, rstack, retval);
 
-	ret_loc = rstack->parent_loc;
 	retaddr = rstack->parent_ip;
 
 	/* re-hijack return address of parent */
@@ -1619,17 +1403,6 @@ static unsigned long __mcount_exit(long *retval)
 		mcount_auto_rehook(mtdp);
 
 	__mcount_unguard_recursion(mtdp);
-
-	if (unlikely(mcount_should_stop())) {
-		mtd_dtor(mtdp);
-		/*
-		 * mtd_dtor() will free rstack but current ret_addr
-		 * might be plthook_return() when it was a tail call.
-		 * Reload the return address after mtd_dtor() restored
-		 * all the parent locations.
-		 */
-		retaddr = *ret_loc;
-	}
 
 	compiler_barrier();
 

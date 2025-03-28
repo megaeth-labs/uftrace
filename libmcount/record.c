@@ -886,7 +886,7 @@ static int record_event(struct mcount_thread_data *mtdp, struct mcount_event *ev
 	struct {
 		uint64_t time;
 		uint64_t data;
-	} * rec;
+	} *rec;
 	size_t size = sizeof(*rec);
 	uint16_t data_size = event->dsize;
 
@@ -945,46 +945,6 @@ static int record_ret_stack(struct mcount_thread_data *mtdp, enum uftrace_record
 	if (type == UFTRACE_EXIT)
 		timestamp = mrstack->end_time;
 
-	if (unlikely(mtdp->nr_events)) {
-		/* save async events first (if any) */
-		while (mtdp->nr_events && mtdp->event[0].time < timestamp) {
-			record_event(mtdp, &mtdp->event[0]);
-			mtdp->nr_events--;
-
-			mcount_memcpy4(&mtdp->event[0], &mtdp->event[1],
-				       sizeof(*mtdp->event) * mtdp->nr_events);
-		}
-	}
-
-	if (type == UFTRACE_EXIT && unlikely(mrstack->nr_events)) {
-		int i;
-		unsigned evidx;
-		struct mcount_event *event;
-
-		argbuf = get_argbuf(mtdp, mrstack) + mrstack->event_idx;
-
-		for (i = 0; i < mrstack->nr_events; i++) {
-			evidx = mrstack->nr_events - i - 1;
-			event = get_event_pointer(argbuf, evidx);
-
-			if (event->time != timestamp)
-				continue;
-
-			/* save read2 trigger before exit record */
-			record_event(mtdp, event);
-		}
-
-		mrstack->nr_events = 0;
-		argbuf = NULL;
-	}
-
-	if ((type == UFTRACE_ENTRY && mrstack->flags & MCOUNT_FL_ARGUMENT) ||
-	    (type == UFTRACE_EXIT && mrstack->flags & MCOUNT_FL_RETVAL)) {
-		argbuf = get_argbuf(mtdp, mrstack);
-		if (argbuf)
-			size += *(unsigned *)argbuf;
-	}
-
 	curr_buf = get_shmem_buffer(mtdp, size);
 	if (curr_buf == NULL)
 		return mtdp->shmem.done ? 0 : -1;
@@ -1014,38 +974,6 @@ static int record_ret_stack(struct mcount_thread_data *mtdp, enum uftrace_record
 
 	curr_buf->size += sizeof(*frstack);
 	mrstack->flags |= MCOUNT_FL_WRITTEN;
-
-	if (argbuf) {
-		unsigned int *ptr = (void *)curr_buf->data + curr_buf->size;
-
-		size -= sizeof(*frstack);
-
-		mcount_memcpy4(ptr, argbuf + 4, size);
-
-		curr_buf->size += ALIGN(size, 8);
-	}
-
-	pr_dbg3("rstack[%d] %s %lx\n", mrstack->depth, type == UFTRACE_ENTRY ? "ENTRY" : "EXIT ",
-		mrstack->child_ip);
-
-	if (unlikely(mrstack->nr_events) && type == UFTRACE_ENTRY) {
-		int i;
-		unsigned evidx;
-		struct mcount_event *event;
-
-		argbuf = get_argbuf(mtdp, mrstack) + mrstack->event_idx;
-
-		for (i = 0; i < mrstack->nr_events; i++) {
-			evidx = mrstack->nr_events - i - 1;
-			event = get_event_pointer(argbuf, evidx);
-
-			if (event->time != timestamp)
-				break;
-
-			/* save read trigger after entry record */
-			record_event(mtdp, event);
-		}
-	}
 
 	return 0;
 }
@@ -1078,8 +1006,6 @@ int record_trace_data(struct mcount_thread_data *mtdp, struct mcount_ret_stack *
 		      long *retval)
 {
 	struct mcount_ret_stack *non_written_mrstack = NULL;
-	struct uftrace_record *frstack;
-	size_t size = 0;
 	int count = 0;
 
 #define SKIP_FLAGS (MCOUNT_FL_NORECORD | MCOUNT_FL_DISABLED)
@@ -1101,14 +1027,6 @@ int record_trace_data(struct mcount_thread_data *mtdp, struct mcount_ret_stack *
 
 			if (!(prev->flags & SKIP_FLAGS)) {
 				count++;
-
-				if (prev->flags & MCOUNT_FL_ARGUMENT) {
-					unsigned *argbuf_size;
-
-					argbuf_size = get_argbuf(mtdp, prev);
-					if (argbuf_size)
-						size += *argbuf_size;
-				}
 			}
 
 			non_written_mrstack = prev;
@@ -1117,11 +1035,6 @@ int record_trace_data(struct mcount_thread_data *mtdp, struct mcount_ret_stack *
 
 	if (mrstack->end_time)
 		count++; /* for exit */
-
-	size += count * sizeof(*frstack);
-
-	pr_dbg3("task %d recorded %zd bytes (record count = %d)\n", mcount_gettid(mtdp), size,
-		count);
 
 	while (non_written_mrstack && non_written_mrstack < mrstack) {
 		if (!(non_written_mrstack->flags & SKIP_FLAGS)) {

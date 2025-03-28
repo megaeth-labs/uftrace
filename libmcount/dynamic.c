@@ -31,6 +31,80 @@
 #include "utils/symbol.h"
 #include "utils/utils.h"
 
+typedef struct {
+	unsigned long key;
+	struct mcount_orig_insn value;
+} kv_pair;
+
+typedef struct {
+	size_t size;
+	size_t capacity;
+	kv_pair *pairs;
+} sorted_map;
+
+sorted_map *sorted_map_create(size_t init_cap)
+{
+	sorted_map *map = xmalloc(sizeof(sorted_map));
+	map->size = 0;
+	map->capacity = init_cap;
+	map->pairs = xmalloc(init_cap * sizeof(kv_pair));
+	return map;
+}
+
+void sorted_map_free(sorted_map *map)
+{
+	free(map->pairs);
+	free(map);
+}
+
+struct mcount_orig_insn *sorted_map_insert(sorted_map *map, unsigned long key)
+{
+	size_t left, right;
+
+	if (map->size == map->capacity) {
+		map->capacity *= 2;
+		map->pairs = xrealloc(map->pairs, map->capacity * sizeof(kv_pair));
+	}
+	left = 0;
+	right = map->size;
+	while (left < right) {
+		size_t mid = left + (right - left) / 2;
+		if (map->pairs[mid].key < key) {
+			left = mid + 1;
+		}
+		else {
+			right = mid;
+		}
+	}
+	for (size_t i = map->size; i > left; i--) {
+		map->pairs[i] = map->pairs[i - 1];
+	}
+	map->pairs[left].key = key;
+	map->size++;
+	return &map->pairs[left].value;
+}
+
+struct mcount_orig_insn *sorted_map_get(sorted_map *map, unsigned long key)
+{
+	size_t left, right;
+
+	left = 0;
+	right = map->size;
+	while (left < right) {
+		size_t mid = left + (right - left) / 2;
+		if (map->pairs[mid].key < key) {
+			left = mid + 1;
+		}
+		else {
+			right = mid;
+		}
+	}
+	if (left < map->size && map->pairs[left].key == key) {
+		return &map->pairs[left].value;
+	}
+	return NULL;
+}
+
 static struct mcount_dynamic_info *mdinfo;
 static struct mcount_dynamic_stats {
 	int total;
@@ -51,7 +125,7 @@ struct code_page {
 
 static LIST_HEAD(code_pages);
 
-static struct Hashmap *code_hmap;
+static sorted_map *sorted_code_map;
 
 /* minimum function size for dynamic update */
 static unsigned min_size;
@@ -59,23 +133,14 @@ static unsigned min_size;
 /* disassembly engine for dynamic code patch (for capstone) */
 static struct mcount_disasm_engine disasm;
 
-static struct mcount_orig_insn *create_code(struct Hashmap *map, unsigned long addr)
+static struct mcount_orig_insn *create_code(sorted_map *map, unsigned long addr)
 {
-	struct mcount_orig_insn *entry;
-
-	entry = xmalloc(sizeof *entry);
-	entry->addr = addr;
-	if (hashmap_put(code_hmap, (void *)entry->addr, entry) == NULL)
-		pr_err("code map allocation failed");
-	return entry;
+	return sorted_map_insert(map, addr);
 }
 
-static struct mcount_orig_insn *lookup_code(struct Hashmap *map, unsigned long addr)
+static struct mcount_orig_insn *lookup_code(sorted_map *map, unsigned long addr)
 {
-	struct mcount_orig_insn *entry;
-
-	entry = hashmap_get(code_hmap, (void *)addr);
-	return entry;
+	return sorted_map_get(map, addr);
 }
 
 static struct code_page *alloc_codepage(void)
@@ -119,7 +184,7 @@ void mcount_save_code(struct mcount_disasm_info *info, unsigned call_size, void 
 		cp = alloc_codepage();
 	}
 
-	orig = create_code(code_hmap, info->addr + call_size);
+	orig = create_code(sorted_code_map, info->addr + call_size);
 
 	/*
 	 * if dynamic patch has been processed before, cp be frozen by
@@ -172,7 +237,7 @@ void *mcount_find_code(unsigned long addr)
 {
 	struct mcount_orig_insn *orig;
 
-	orig = lookup_code(code_hmap, addr);
+	orig = lookup_code(sorted_code_map, addr);
 	if (orig == NULL)
 		return NULL;
 
@@ -181,22 +246,12 @@ void *mcount_find_code(unsigned long addr)
 
 struct mcount_orig_insn *mcount_find_insn(unsigned long addr)
 {
-	return lookup_code(code_hmap, addr);
-}
-
-static bool release_code(void *key, void *value, void *ctx)
-{
-	hashmap_remove(code_hmap, key);
-	free(value);
-	return true;
+	return lookup_code(sorted_code_map, addr);
 }
 
 /* not actually called for safety reason */
 void mcount_release_code(void)
 {
-	hashmap_for_each(code_hmap, release_code, NULL);
-	hashmap_free(code_hmap);
-
 	while (!list_empty(&code_pages)) {
 		struct code_page *cp;
 
@@ -329,7 +384,7 @@ static void prepare_dynamic_update(struct uftrace_sym_info *sinfo, bool needs_mo
 	if (needs_modules)
 		hash_size *= 2;
 
-	code_hmap = hashmap_create(hash_size, hashmap_ptr_hash, hashmap_ptr_equals);
+	sorted_code_map = sorted_map_create(hash_size);
 
 	dl_iterate_phdr(find_dynamic_module, &fmd);
 }

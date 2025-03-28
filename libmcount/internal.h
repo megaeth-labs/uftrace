@@ -175,17 +175,11 @@ static inline void mcount_restore_arch_context(struct mcount_arch_context *ctx)
 }
 #endif
 
-#ifdef SINGLE_THREAD
-#define TLS
+#define TLS _Thread_local
 #define get_thread_data() &mtd
 #define check_thread_data(mtdp) (mtdp->rstack == NULL)
-#else
-#define TLS __thread
-#define get_thread_data() pthread_getspecific(mtd_key)
-#define check_thread_data(mtdp) (mtdp == NULL)
-#endif
 
-extern TLS struct mcount_thread_data mtd;
+extern TLS struct mcount_thread_data mtd __attribute__((tls_model("initial-exec")));
 
 void __mcount_guard_recursion(struct mcount_thread_data *mtdp);
 void __mcount_unguard_recursion(struct mcount_thread_data *mtdp);
