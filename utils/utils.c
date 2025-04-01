@@ -17,6 +17,8 @@
 #include "utils/kernel.h"
 #include "utils/utils.h"
 
+uint64_t tsc_freq_mhz;
+
 volatile bool uftrace_done;
 
 /* default uftrace options to be applied for analysis commands */

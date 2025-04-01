@@ -35,8 +35,6 @@
 #include "utils/utils.h"
 #include "version.h"
 
-uint64_t tsc_freq_mhz;
-
 static const char uftrace_version[] = "uftrace " UFTRACE_VERSION;
 
 static bool dbg_domain_set = false;

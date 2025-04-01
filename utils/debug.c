@@ -381,6 +381,7 @@ static void __print_time_unit(int64_t delta_nsec, bool needs_sign)
 
 void print_time_unit(uint64_t delta_nsec)
 {
+	delta_nsec = delta_nsec * 1000 / tsc_freq_mhz;
 	__print_time_unit(delta_nsec, false);
 }
 
@@ -390,6 +391,8 @@ void print_diff_percent(uint64_t base_nsec, uint64_t pair_nsec)
 	const char *sc;
 	const char *ec = get_color(COLOR_CODE_RESET);
 
+	base_nsec = base_nsec * 1000 / tsc_freq_mhz;
+	pair_nsec = pair_nsec * 1000 / tsc_freq_mhz;
 	if (base_nsec == 0) {
 		sc = get_color(COLOR_CODE_RED);
 		pr_out("%s%7s%s ", sc, "N/A", ec);
@@ -420,6 +423,8 @@ void print_diff_percent(uint64_t base_nsec, uint64_t pair_nsec)
 
 void print_diff_time_unit(uint64_t base_nsec, uint64_t pair_nsec)
 {
+	base_nsec = base_nsec * 1000 / tsc_freq_mhz;
+	pair_nsec = pair_nsec * 1000 / tsc_freq_mhz;
 	if (base_nsec == pair_nsec)
 		pr_out("%11s", "0 us");
 	else

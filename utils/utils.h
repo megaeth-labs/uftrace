@@ -22,6 +22,8 @@
 
 #include "compiler.h"
 
+extern uint64_t tsc_freq_mhz;
+
 #ifndef container_of
 #define container_of(ptr, type, member)                                                            \
 	({                                                                                         \
@@ -31,13 +33,13 @@
 #endif
 
 #ifndef ALIGN
-#define ALIGN(n, a) (((n) + (a)-1) & ~((a)-1))
+#define ALIGN(n, a) (((n) + (a) - 1) & ~((a) - 1))
 #endif
 
 #define MIN(a, b) (((a) < (b)) ? (a) : (b))
 #define MAX(a, b) (((a) > (b)) ? (a) : (b))
 
-#define DIV_ROUND_UP(v, r) (((v) + (r)-1) / (r))
+#define DIV_ROUND_UP(v, r) (((v) + (r) - 1) / (r))
 #define ROUND_UP(v, r) (DIV_ROUND_UP((v), (r)) * (r))
 #define ROUND_DOWN(v, r) (((v) / (r)) * (r))
 

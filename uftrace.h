@@ -316,8 +316,6 @@ struct uftrace_opts {
 	enum uftrace_trace_state trace;
 };
 
-extern uint64_t tsc_freq_mhz;
-
 extern struct strv default_opts;
 
 static inline uint64_t rdtsc(void)
