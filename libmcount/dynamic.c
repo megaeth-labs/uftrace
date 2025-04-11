@@ -604,6 +604,25 @@ static void patch_patchable_func_matched(struct mcount_dynamic_info *mdi, struct
 	free(soname);
 }
 
+static const unsigned char endbr64[] = { 0xf3, 0x0f, 0x1e, 0xfa };
+
+static const unsigned char xray_jmp_pat[] = { 0xeb, 0x09, 0x66, 0x0f, 0x1f, 0x84,
+					      0x00, 0x00, 0x02, 0x00, 0x00 };
+
+static const unsigned char nop11[] = { 0x66, 0x0f, 0x1f, 0x84, 0x00, 0x00,
+				       0x00, 0x00, 0x00, 0x66, 0x90 };
+
+static void xray_sled_nop_boost(struct mcount_dynamic_info *mdi, struct uftrace_symbol *sym)
+{
+	unsigned char *insn = (unsigned char *)sym->addr + mdi->map->start;
+
+	if (!memcmp(insn, endbr64, sizeof(endbr64)))
+		insn += sizeof(endbr64);
+	if (!memcmp(insn, xray_jmp_pat, sizeof(xray_jmp_pat))) {
+		memcpy(insn, nop11, sizeof(nop11));
+	}
+}
+
 static void patch_normal_func_matched(struct mcount_dynamic_info *mdi, struct uftrace_mmap *map)
 {
 	struct uftrace_symtab *symtab;
@@ -622,6 +641,7 @@ static void patch_normal_func_matched(struct mcount_dynamic_info *mdi, struct uf
 			continue;
 		found = true;
 
+		xray_sled_nop_boost(mdi, sym);
 		match = match_pattern_list(map, soname, sym->name);
 		if (!match)
 			continue;

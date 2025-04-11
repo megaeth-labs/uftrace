@@ -27,6 +27,14 @@ static const unsigned char mo_return_nop[] = {
 	0x2e, 0x66, 0x0f, 0x1f, 0x84, 00, 00, 0x02, 00, 00,
 };
 
+static const unsigned char nop5[] = {
+	0x0f, 0x1f, 0x44, 0x00, 0x00,
+};
+
+static const unsigned char nop6[] = {
+	0x66, 0x0f, 0x1f, 0x44, 0x00, 0x00,
+};
+
 int mcount_setup_trampoline(struct mcount_dynamic_info *mdi)
 {
 	unsigned char trampoline[] = { 0x3e, 0xff, 0x25, 0x01, 0x00, 0x00, 0x00, 0xcc };
@@ -300,11 +308,7 @@ static int patch_mo_return_code(struct mcount_dynamic_info *mdi, struct uftrace_
 				/* hopefully we're not patching 'memcpy' itself */
 				memcpy(&ret_addr[1], &target_addr, sizeof(target_addr));
 				ret_addr[5] = 0xc3;
-				ret_addr[6] = 0x90;
-				ret_addr[7] = 0x90;
-				ret_addr[8] = 0x90;
-				ret_addr[9] = 0x90;
-				ret_addr[10] = 0x90;
+				memcpy(&ret_addr[6], nop5, sizeof(nop5));
 			}
 			else {
 				pr_err("Failed to find patchable return instruction\n");
@@ -335,15 +339,10 @@ static int patch_mo_code(struct mcount_dynamic_info *mdi, struct uftrace_symbol 
 	/* hopefully we're not patching 'memcpy' itself */
 	memcpy(&insn[1], &target_addr, sizeof(target_addr));
 
-	insn[5] = 0x90;
-	insn[6] = 0x90;
-	insn[7] = 0x90;
-	insn[8] = 0x90;
-	insn[9] = 0x90;
-	insn[10] = 0x90;
+	memcpy(&insn[5], nop6, sizeof(nop6));
 
-	pr_dbg3("update %p for '%s' function dynamically to call __mentry__ and __mexit__\n", insn,
-		sym->name);
+	pr_dbg3("update %p for '%s' function dynamically to call __mo_entry__ and __mo_exit__\n",
+		insn, sym->name);
 
 	if (patch_mo_return_code(mdi, sym) != INSTRUMENT_SUCCESS) {
 		pr_err("Failed to patch return code\n");
