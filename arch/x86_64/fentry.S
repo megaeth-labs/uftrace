@@ -84,3 +84,107 @@ GLOBAL(__fentry__)
 	retq
 	.cfi_endproc
 END(__fentry__)
+
+GLOBAL(__mo_entry__)
+	.cfi_startproc
+	sub $48, %rsp
+	.cfi_adjust_cfa_offset 48
+
+	/* save register arguments in mcount_args */
+	movq %rdi, 40(%rsp)
+	movq %rsi, 32(%rsp)
+	movq %rdx, 24(%rsp)
+	movq %rcx, 16(%rsp)
+	movq %r8,   8(%rsp)
+	movq %r9,   0(%rsp)
+
+	/* child addr */
+	movq 48(%rsp), %rsi
+
+	/* parent location */
+	lea 56(%rsp), %rdi
+
+	/* mcount_args */
+	movq %rsp, %rdx
+	.cfi_def_cfa_register rdx
+
+	/* align stack pointer to 16-byte */
+	andq $0xfffffffffffffff0, %rsp
+	push %rdx
+
+	/* save rax (implicit argument for variadic functions) */
+	push %rax
+
+	/* save scratch registers due to -fipa-ra */
+	push %r10
+	push %r11
+
+	call mo_entry
+
+	pop  %r11
+	pop  %r10
+	pop  %rax
+
+	/* restore original stack pointer */
+	pop  %rdx
+	movq %rdx, %rsp
+	.cfi_def_cfa_register rsp
+
+	/* restore mcount_args */
+	movq  0(%rsp), %r9
+	movq  8(%rsp), %r8
+	movq 16(%rsp), %rcx
+	movq 24(%rsp), %rdx
+	movq 32(%rsp), %rsi
+	movq 40(%rsp), %rdi
+
+	add $48, %rsp
+	.cfi_adjust_cfa_offset -48
+	retq
+	.cfi_endproc
+END(__mo_entry__)
+
+ENTRY(__mo_exit__)
+	.cfi_startproc
+	sub    $96, %rsp
+	.cfi_def_cfa_offset 96
+
+	movq   %r11,  80(%rsp)
+	movq   %r10,  72(%rsp)
+	movq   %r9,   64(%rsp)
+	movq   %r8,   56(%rsp)
+	movq   %rdi,  48(%rsp)
+	movq   %rsi,  40(%rsp)
+	movq   %rcx,  32(%rsp)
+
+	movdqu %xmm0, 16(%rsp)
+	movq   %rdx,   8(%rsp)
+	movq   %rax,   0(%rsp)
+
+	movq   %rsp,   %rdi
+
+	andq   $0xfffffffffffffff0, %rsp
+	sub    $16,    %rsp
+	movq   %rdi,   (%rsp)
+
+	call   mo_exit
+
+	movq   (%rsp), %rsp
+
+	movq    0(%rsp), %rax
+	movq    8(%rsp), %rdx
+	movdqu 16(%rsp), %xmm0
+
+	movq   32(%rsp), %rcx
+	movq   40(%rsp), %rsi
+	movq   48(%rsp), %rdi
+	movq   56(%rsp), %r8
+	movq   64(%rsp), %r9
+	movq   72(%rsp), %r10
+	movq   80(%rsp), %r11
+
+
+	 add    $96, %rsp
+	 retq
+	.cfi_endproc
+END(__mo_exit__)

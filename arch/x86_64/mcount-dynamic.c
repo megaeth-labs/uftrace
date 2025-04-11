@@ -23,12 +23,19 @@ static const unsigned char patchable_clang_nop[] = { 0x0f, 0x1f, 0x44, 0x00, 0x0
 
 static const unsigned char endbr64[] = { 0xf3, 0x0f, 0x1e, 0xfa };
 
+static const unsigned char mo_return_nop[] = {
+	0x2e, 0x66, 0x0f, 0x1f, 0x84, 00, 00, 0x02, 00, 00,
+};
+
 int mcount_setup_trampoline(struct mcount_dynamic_info *mdi)
 {
 	unsigned char trampoline[] = { 0x3e, 0xff, 0x25, 0x01, 0x00, 0x00, 0x00, 0xcc };
 	unsigned long fentry_addr = (unsigned long)__fentry__;
 	unsigned long xray_entry_addr = (unsigned long)__xray_entry;
 	unsigned long xray_exit_addr = (unsigned long)__xray_exit;
+	unsigned long mo_entry_addr = (unsigned long)__mo_entry__;
+	unsigned long mo_exit_addr = (unsigned long)__mo_exit__;
+
 	size_t trampoline_size = 16;
 	void *trampoline_check;
 
@@ -62,15 +69,15 @@ int mcount_setup_trampoline(struct mcount_dynamic_info *mdi)
 	}
 
 	if (mdi->type == DYNAMIC_XRAY) {
-		/* jmpq  *0x1(%rip)     # <xray_entry_addr> */
+		/* jmpq  *0x1(%rip)     # <mentry_addr> */
 		memcpy((void *)mdi->trampoline, trampoline, sizeof(trampoline));
-		memcpy((void *)mdi->trampoline + sizeof(trampoline), &xray_entry_addr,
-		       sizeof(xray_entry_addr));
+		memcpy((void *)mdi->trampoline + sizeof(trampoline), &mo_entry_addr,
+		       sizeof(mo_entry_addr));
 
-		/* jmpq  *0x1(%rip)     # <xray_exit_addr> */
+		/* jmpq  *0x1(%rip)     # <mexit_addr> */
 		memcpy((void *)mdi->trampoline + 16, trampoline, sizeof(trampoline));
-		memcpy((void *)mdi->trampoline + 16 + sizeof(trampoline), &xray_exit_addr,
-		       sizeof(xray_exit_addr));
+		memcpy((void *)mdi->trampoline + 16 + sizeof(trampoline), &mo_exit_addr,
+		       sizeof(mo_exit_addr));
 	}
 	else if (mdi->type == DYNAMIC_FENTRY_NOP || mdi->type == DYNAMIC_PATCHABLE) {
 		/* jmpq  *0x1(%rip)     # <fentry_addr> */
@@ -191,7 +198,7 @@ void mcount_arch_find_module(struct mcount_dynamic_info *mdi, struct uftrace_sym
 
 		if (!strcmp(shstr, XRAY_SECT)) {
 			mdi->type = DYNAMIC_XRAY;
-			read_xray_map(mdi, &elf, &iter, mdi->base_addr);
+			//			read_xray_map(mdi, &elf, &iter, mdi->base_addr);
 			goto out;
 		}
 
@@ -258,6 +265,93 @@ static unsigned long get_target_addr(struct mcount_dynamic_info *mdi, unsigned l
 	return mdi->trampoline - (addr + CALL_INSN_SIZE);
 }
 
+static int patch_mo_return_code(struct mcount_dynamic_info *mdi, struct uftrace_symbol *sym)
+{
+	unsigned char *func_start = (void *)sym->addr + mdi->map->start;
+	unsigned char *func_end = func_start + sym->size;
+	csh handle;
+	cs_insn *insn;
+	size_t i, count;
+	unsigned int target_addr;
+
+	if (cs_open(CS_ARCH_X86, CS_MODE_64, &handle) != CS_ERR_OK) {
+		pr_err("Failed to open Capstone engine: %s\n", cs_strerror(cs_errno(handle)));
+		return INSTRUMENT_FAILED;
+	}
+	count = cs_disasm(handle, func_start, sym->size, (uintptr_t)func_start, 0, &insn);
+	if (count == 0) {
+		pr_err("Failed to disassemble code: %s\n", cs_strerror(cs_errno(handle)));
+		cs_close(&handle);
+		return INSTRUMENT_FAILED;
+	}
+	for (i = 0; i < count; i++) {
+		if (insn[i].id == X86_INS_RET) {
+			unsigned char *ret_addr = (unsigned char *)insn[i].address;
+			unsigned char *nop_addr = ret_addr + 1;
+			if (memcmp(nop_addr, mo_return_nop, sizeof(mo_return_nop)) == 0) {
+				target_addr = get_target_addr(mdi, (unsigned long)nop_addr);
+				if (target_addr == 0) {
+					pr_err("Failed to get target address\n");
+					return INSTRUMENT_SKIPPED;
+				}
+				target_addr += 16;
+				/* make a "call" insn with 4-byte offset */
+				ret_addr[0] = 0xe8;
+				/* hopefully we're not patching 'memcpy' itself */
+				memcpy(&ret_addr[1], &target_addr, sizeof(target_addr));
+				ret_addr[5] = 0xc3;
+				ret_addr[6] = 0x90;
+				ret_addr[7] = 0x90;
+				ret_addr[8] = 0x90;
+				ret_addr[9] = 0x90;
+				ret_addr[10] = 0x90;
+			}
+			else {
+				pr_err("Failed to find patchable return instruction\n");
+			}
+		}
+	}
+	cs_free(insn, count);
+	cs_close(&handle);
+	return INSTRUMENT_SUCCESS;
+}
+
+static int patch_mo_code(struct mcount_dynamic_info *mdi, struct uftrace_symbol *sym)
+{
+	unsigned char *insn = (void *)sym->addr + mdi->map->start;
+	unsigned int target_addr;
+
+	/* skip 'endbr64' instruction, which is inserted by (implicit) -fcf-protection option. */
+	if (!memcmp(insn, endbr64, sizeof(endbr64)))
+		insn += sizeof(endbr64);
+
+	/* get the jump offset to the trampoline */
+	target_addr = get_target_addr(mdi, (unsigned long)insn);
+	if (target_addr == 0)
+		return INSTRUMENT_SKIPPED;
+
+	/* make a "call" insn with 4-byte offset */
+	insn[0] = 0xe8;
+	/* hopefully we're not patching 'memcpy' itself */
+	memcpy(&insn[1], &target_addr, sizeof(target_addr));
+
+	insn[5] = 0x90;
+	insn[6] = 0x90;
+	insn[7] = 0x90;
+	insn[8] = 0x90;
+	insn[9] = 0x90;
+	insn[10] = 0x90;
+
+	pr_dbg3("update %p for '%s' function dynamically to call __mentry__ and __mexit__\n", insn,
+		sym->name);
+
+	if (patch_mo_return_code(mdi, sym) != INSTRUMENT_SUCCESS) {
+		pr_err("Failed to patch return code\n");
+		return INSTRUMENT_FAILED;
+	}
+	return INSTRUMENT_SUCCESS;
+}
+
 static int patch_fentry_code(struct mcount_dynamic_info *mdi, struct uftrace_symbol *sym)
 {
 	unsigned char *insn = (void *)sym->addr + mdi->map->start;
@@ -300,6 +394,11 @@ static int patch_patchable_func(struct mcount_dynamic_info *mdi, struct uftrace_
 {
 	/* it does the same patch logic with fentry. */
 	return patch_fentry_code(mdi, sym);
+}
+
+static int patch_mo_func(struct mcount_dynamic_info *mdi, struct uftrace_symbol *sym)
+{
+	return patch_mo_code(mdi, sym);
 }
 
 static int update_xray_code(struct mcount_dynamic_info *mdi, struct uftrace_symbol *sym,
@@ -601,7 +700,8 @@ int mcount_patch_func(struct mcount_dynamic_info *mdi, struct uftrace_symbol *sy
 
 	switch (mdi->type) {
 	case DYNAMIC_XRAY:
-		result = patch_xray_func(mdi, sym);
+		//  reuse xray to patch mo_entry and mo_exit
+		result = patch_mo_func(mdi, sym);
 		break;
 
 	case DYNAMIC_FENTRY_NOP:

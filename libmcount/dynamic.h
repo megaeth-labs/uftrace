@@ -26,6 +26,8 @@ extern void __fentry__(void);
 extern void __dentry__(void);
 extern void __xray_entry(void);
 extern void __xray_exit(void);
+extern void __mo_entry__(void);
+extern void __mo_exit__(void);
 
 struct xray_instr_map {
 	uint64_t address;

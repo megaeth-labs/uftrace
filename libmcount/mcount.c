@@ -1419,6 +1419,88 @@ unsigned long mcount_exit(long *retval)
 	return ret;
 }
 
+static int __mo_entry(unsigned long *parent_loc, unsigned long child, struct mcount_regs *regs)
+{
+	enum filter_result filtered;
+	struct mcount_thread_data *mtdp;
+	struct mcount_ret_stack *rstack;
+	struct uftrace_trigger tr;
+	static pthread_once_t once_control = PTHREAD_ONCE_INIT;
+
+	pthread_once(&once_control, mcount_init_prepare);
+	mtdp = &mtd;
+	mcount_guard_recursion(mtdp);
+
+	tr.flags = 0;
+	tr.cond.idx = 0;
+	filtered = mcount_entry_filter_check(mtdp, child, &tr, regs);
+	if (filtered != FILTER_IN) {
+		mcount_unguard_recursion(mtdp);
+		return -1;
+	}
+
+	rstack = &mtdp->rstack[mtdp->idx++];
+
+	rstack->depth = mtdp->record_idx;
+	rstack->dyn_idx = MCOUNT_INVALID_DYNIDX;
+	rstack->parent_loc = parent_loc;
+	rstack->parent_ip = *parent_loc;
+	rstack->child_ip = child;
+	rstack->end_time = 0;
+	rstack->flags = 0;
+	rstack->nr_events = 0;
+	rstack->event_idx = ARGBUF_SIZE;
+
+	mcount_entry_filter_record(mtdp, rstack, &tr, regs);
+	mcount_unguard_recursion(mtdp);
+	rstack->start_time = mcount_gettime();
+	return 0;
+}
+
+int mo_entry(unsigned long *parent_loc, unsigned long child, struct mcount_regs *regs)
+{
+	int saved_errno = errno;
+	int ret = __mo_entry(parent_loc, child, regs);
+
+	errno = saved_errno;
+	return ret;
+}
+
+static unsigned long __mo_exit(long *retval)
+{
+	struct mcount_thread_data *mtdp;
+	struct mcount_ret_stack *rstack;
+
+	mtdp = get_thread_data();
+
+	rstack = &mtdp->rstack[mtdp->idx - 1];
+	rstack->end_time = mcount_gettime();
+	/*
+	 * it's only called when mcount_entry() was succeeded and
+	 * no need to check recursion here.  But still needs to
+	 * prevent recursion during this call.
+	 */
+	__mcount_guard_recursion(mtdp);
+
+	mcount_exit_filter_record(mtdp, rstack, retval);
+
+	__mcount_unguard_recursion(mtdp);
+
+	compiler_barrier();
+
+	mtdp->idx--;
+	return 0;
+}
+
+unsigned long mo_exit(long *retval)
+{
+	int saved_errno = errno;
+	__mo_exit(retval);
+
+	errno = saved_errno;
+	return 0;
+}
+
 static int __cygprof_entry(unsigned long parent, unsigned long child)
 {
 	enum filter_result filtered;
