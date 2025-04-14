@@ -936,6 +936,8 @@ static void mcount_init_prepare(void)
 
 	compiler_barrier();
 	mcount_filter_setup(&mtd);
+	mtd.depth = 0;
+	mtd.need_record = true;
 	mtd.rstack = xmalloc(mcount_rstack_max * sizeof(*mtd.rstack));
 	mcount_init_file();
 	prepare_shmem_buffer(&mtd);
@@ -1429,12 +1431,19 @@ static int __mo_entry(unsigned long *parent_loc, unsigned long child, struct mco
 
 	pthread_once(&once_control, mcount_init_prepare);
 	mtdp = &mtd;
+
+	mtdp->depth++;
+	if (!mtdp->need_record) {
+		return 0;
+	}
 	mcount_guard_recursion(mtdp);
 
 	tr.flags = 0;
 	tr.cond.idx = 0;
 	filtered = mcount_entry_filter_check(mtdp, child, &tr, regs);
 	if (filtered != FILTER_IN) {
+		mtdp->need_record = false;
+		mtdp->marked_depth = mtdp->depth - 1;
 		mcount_unguard_recursion(mtdp);
 		return -1;
 	}
@@ -1472,6 +1481,13 @@ static unsigned long __mo_exit(long *retval)
 	struct mcount_ret_stack *rstack;
 
 	mtdp = get_thread_data();
+	mtdp->depth--;
+	if (!mtdp->need_record) {
+		if (mtdp->depth == mtdp->marked_depth) {
+			mtdp->need_record = true;
+		}
+		return 0;
+	}
 
 	rstack = &mtdp->rstack[mtdp->idx - 1];
 	rstack->end_time = mcount_gettime();

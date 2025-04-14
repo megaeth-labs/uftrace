@@ -142,6 +142,10 @@ static inline void finish_mem_region(struct mcount_mem_regions *regions)
  * not filtered out so that we can keep proper depth in the output.
  */
 struct mcount_thread_data {
+	bool need_record;
+	int depth;
+	int marked_depth;
+
 	int tid;
 	int idx;
 	int record_idx;
