@@ -35,6 +35,9 @@ static const unsigned char nop6[] = {
 	0x66, 0x0f, 0x1f, 0x44, 0x00, 0x00,
 };
 
+static const unsigned char nop11[] = { 0x66, 0x0f, 0x1f, 0x84, 0x00, 0x00,
+				       0x00, 0x00, 0x00, 0x66, 0x90 };
+
 int mcount_setup_trampoline(struct mcount_dynamic_info *mdi)
 {
 	unsigned char trampoline[] = { 0x3e, 0xff, 0x25, 0x01, 0x00, 0x00, 0x00, 0xcc };
@@ -77,12 +80,12 @@ int mcount_setup_trampoline(struct mcount_dynamic_info *mdi)
 	}
 
 	if (mdi->type == DYNAMIC_XRAY) {
-		/* jmpq  *0x1(%rip)     # <mentry_addr> */
+		/* jmpq  *0x1(%rip)     # <mo_entry_addr> */
 		memcpy((void *)mdi->trampoline, trampoline, sizeof(trampoline));
 		memcpy((void *)mdi->trampoline + sizeof(trampoline), &mo_entry_addr,
 		       sizeof(mo_entry_addr));
 
-		/* jmpq  *0x1(%rip)     # <mexit_addr> */
+		/* jmpq  *0x1(%rip)     # <mo_exit_addr> */
 		memcpy((void *)mdi->trampoline + 16, trampoline, sizeof(trampoline));
 		memcpy((void *)mdi->trampoline + 16 + sizeof(trampoline), &mo_exit_addr,
 		       sizeof(mo_exit_addr));
@@ -275,40 +278,62 @@ static unsigned long get_target_addr(struct mcount_dynamic_info *mdi, unsigned l
 
 static int patch_mo_return_code(struct mcount_dynamic_info *mdi, struct uftrace_symbol *sym)
 {
-	unsigned char *func_start = (void *)sym->addr + mdi->map->start;
-	unsigned char *func_end = func_start + sym->size;
 	csh handle;
 	cs_insn *insn;
 	size_t i, count;
-	unsigned int target_addr;
+	uint32_t target_addr;
+	unsigned char *code = (void *)sym->addr + mdi->map->start;
 
 	if (cs_open(CS_ARCH_X86, CS_MODE_64, &handle) != CS_ERR_OK) {
 		pr_err("Failed to open Capstone engine: %s\n", cs_strerror(cs_errno(handle)));
 		return INSTRUMENT_FAILED;
 	}
-	count = cs_disasm(handle, func_start, sym->size, (uintptr_t)func_start, 0, &insn);
+	count = cs_disasm(handle, code, sym->size, (uintptr_t)code, 0, &insn);
 	if (count == 0) {
-		pr_err("Failed to disassemble code: %s\n", cs_strerror(cs_errno(handle)));
 		cs_close(&handle);
+		pr_err("Failed to disassemble code: %s\n", cs_strerror(cs_errno(handle)));
 		return INSTRUMENT_FAILED;
 	}
 	for (i = 0; i < count; i++) {
-		if (insn[i].id == X86_INS_RET) {
-			unsigned char *ret_addr = (unsigned char *)insn[i].address;
-			unsigned char *nop_addr = ret_addr + 1;
-			if (memcmp(nop_addr, mo_return_nop, sizeof(mo_return_nop)) == 0) {
-				target_addr = get_target_addr(mdi, (unsigned long)nop_addr);
+		if (insn[i].id == X86_INS_NOP) {
+			unsigned char *jmp_addr = (unsigned char *)insn[i].address;
+			if (memcmp(jmp_addr, nop11, sizeof(nop11)) == 0) {
+				target_addr =
+					(uint32_t)get_target_addr(mdi, (unsigned long)jmp_addr) +
+					16;
 				if (target_addr == 0) {
+					cs_free(insn, count);
+					cs_close(&handle);
 					pr_err("Failed to get target address\n");
 					return INSTRUMENT_SKIPPED;
 				}
-				target_addr += 16;
+				/* make a "call" insn with 4-byte offset */
+				jmp_addr[0] = 0xe8;
+				/* hopefully we're not patching 'memcpy' itself */
+				memcpy(&jmp_addr[1], &target_addr, sizeof(target_addr));
+				memcpy(&jmp_addr[5], nop6, sizeof(nop6));
+				__builtin___clear_cache((char *)jmp_addr, (char *)jmp_addr + 11);
+			}
+		}
+		else if (insn[i].id == X86_INS_RET) {
+			unsigned char *ret_addr = (unsigned char *)insn[i].address;
+			if (memcmp(ret_addr + 1, mo_return_nop, sizeof(mo_return_nop)) == 0) {
+				target_addr =
+					(uint32_t)get_target_addr(mdi, (unsigned long)ret_addr) +
+					16;
+				if (target_addr == 0) {
+					cs_free(insn, count);
+					cs_close(&handle);
+					pr_err("Failed to get target address\n");
+					return INSTRUMENT_SKIPPED;
+				}
 				/* make a "call" insn with 4-byte offset */
 				ret_addr[0] = 0xe8;
 				/* hopefully we're not patching 'memcpy' itself */
 				memcpy(&ret_addr[1], &target_addr, sizeof(target_addr));
 				ret_addr[5] = 0xc3;
 				memcpy(&ret_addr[6], nop5, sizeof(nop5));
+				__builtin___clear_cache((char *)ret_addr, (char *)ret_addr + 11);
 			}
 			else {
 				pr_err("Failed to find patchable return instruction\n");
@@ -322,8 +347,8 @@ static int patch_mo_return_code(struct mcount_dynamic_info *mdi, struct uftrace_
 
 static int patch_mo_code(struct mcount_dynamic_info *mdi, struct uftrace_symbol *sym)
 {
+	uint32_t target_addr;
 	unsigned char *insn = (void *)sym->addr + mdi->map->start;
-	unsigned int target_addr;
 
 	/* skip 'endbr64' instruction, which is inserted by (implicit) -fcf-protection option. */
 	if (!memcmp(insn, endbr64, sizeof(endbr64)))
@@ -340,6 +365,8 @@ static int patch_mo_code(struct mcount_dynamic_info *mdi, struct uftrace_symbol 
 	memcpy(&insn[1], &target_addr, sizeof(target_addr));
 
 	memcpy(&insn[5], nop6, sizeof(nop6));
+
+	__builtin___clear_cache((char *)insn, (char *)insn + 11);
 
 	pr_dbg3("update %p for '%s' function dynamically to call __mo_entry__ and __mo_exit__\n",
 		insn, sym->name);

@@ -614,13 +614,32 @@ static const unsigned char nop11[] = { 0x66, 0x0f, 0x1f, 0x84, 0x00, 0x00,
 
 static void xray_sled_nop_boost(struct mcount_dynamic_info *mdi, struct uftrace_symbol *sym)
 {
-	unsigned char *insn = (unsigned char *)sym->addr + mdi->map->start;
+	csh handle;
+	cs_insn *insn;
+	size_t i, count;
+	unsigned char *code = (unsigned char *)sym->addr + mdi->map->start;
 
-	if (!memcmp(insn, endbr64, sizeof(endbr64)))
-		insn += sizeof(endbr64);
-	if (!memcmp(insn, xray_jmp_pat, sizeof(xray_jmp_pat))) {
-		memcpy(insn, nop11, sizeof(nop11));
+	if (cs_open(CS_ARCH_X86, CS_MODE_64, &handle) != CS_ERR_OK) {
+		pr_err("Failed to open Capstone engine: %s\n", cs_strerror(cs_errno(handle)));
+		return;
 	}
+	count = cs_disasm(handle, code, sym->size, (uintptr_t)code, 0, &insn);
+	if (count == 0) {
+		cs_close(&handle);
+		pr_err("Failed to disassemble code: %s\n", cs_strerror(cs_errno(handle)));
+		return;
+	}
+	for (i = 0; i < count; i++) {
+		if (insn[i].id == X86_INS_JMP) {
+			unsigned char *jmp_addr = (unsigned char *)insn[i].address;
+			if (memcmp(jmp_addr, xray_jmp_pat, sizeof(xray_jmp_pat)) == 0) {
+				memcpy(jmp_addr, nop11, sizeof(nop11));
+				__builtin___clear_cache((char *)jmp_addr, (char *)jmp_addr + 11);
+			}
+		}
+	}
+	cs_free(insn, count);
+	cs_close(&handle);
 }
 
 static void patch_normal_func_matched(struct mcount_dynamic_info *mdi, struct uftrace_mmap *map)
