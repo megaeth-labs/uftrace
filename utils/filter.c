@@ -384,7 +384,9 @@ bool uftrace_eval_cond(struct uftrace_filter_cond *cond, void *val)
 	case FILTER_OP_BETWEEN: {
 		long v;
 		struct uftrace_filter_between_cond *bp = cond->val;
-		void *data = get_pointer_data(val, cond->num_off, cond->ptr_off) + cond->off;
+		void *data = cond->off == -1 ? val :
+					       get_pointer_data(val, cond->num_off, cond->ptr_off) +
+						       cond->off;
 
 		if (cond->size == 1) {
 			uint8_t u8_v;
