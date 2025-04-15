@@ -346,16 +346,40 @@ bool uftrace_eval_cond(struct uftrace_filter_cond *cond, void *val)
 {
 	switch (cond->op) {
 	case FILTER_OP_EQ:
+		if (cond->off == -1)
+			return memcmp(val, cond->val, cond->size) == 0;
 		return memcmp(val + cond->off, cond->val, cond->size) == 0;
 	case FILTER_OP_NE:
+		if (cond->off == -1)
+			return memcmp(val, cond->val, cond->size) != 0;
 		return memcmp(val + cond->off, cond->val, cond->size) != 0;
 	case FILTER_OP_GT:
+		if (cond->off == -1) {
+			if (cond->size == 8)
+				return *((int64_t *)val) > *((int64_t *)cond->val);
+			return memcmp(val, cond->val, cond->size) > 0;
+		}
 		return memcmp(val + cond->off, cond->val, cond->size) > 0;
 	case FILTER_OP_GE:
+		if (cond->off == -1) {
+			if (cond->size == 8)
+				return *((int64_t *)val) >= *((int64_t *)cond->val);
+			return memcmp(val, cond->val, cond->size) >= 0;
+		}
 		return memcmp(val + cond->off, cond->val, cond->size) >= 0;
 	case FILTER_OP_LT:
+		if (cond->off == -1) {
+			if (cond->size == 8)
+				return *((int64_t *)val) < *((int64_t *)cond->val);
+			return memcmp(val, cond->val, cond->size) < 0;
+		}
 		return memcmp(val + cond->off, cond->val, cond->size) < 0;
 	case FILTER_OP_LE:
+		if (cond->off == -1) {
+			if (cond->size == 8)
+				return *((int64_t *)val) <= *((int64_t *)cond->val);
+			return memcmp(val, cond->val, cond->size) <= 0;
+		}
 		return memcmp(val + cond->off, cond->val, cond->size) <= 0;
 	case FILTER_OP_BETWEEN: {
 		long v;
