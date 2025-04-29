@@ -612,22 +612,24 @@ static const unsigned char xray_jmp_pat[] = { 0xeb, 0x09, 0x66, 0x0f, 0x1f, 0x84
 static const unsigned char nop11[] = { 0x66, 0x0f, 0x1f, 0x84, 0x00, 0x00,
 				       0x00, 0x00, 0x00, 0x66, 0x90 };
 
-static void xray_sled_nop_boost(struct mcount_dynamic_info *mdi, struct uftrace_symbol *sym)
+static int xray_sled_nop_boost(struct mcount_dynamic_info *mdi, struct uftrace_symbol *sym)
 {
+	int found;
 	csh handle;
 	cs_insn *insn;
 	size_t i, count;
 	unsigned char *code = (unsigned char *)sym->addr + mdi->map->start;
 
 	if (cs_open(CS_ARCH_X86, CS_MODE_64, &handle) != CS_ERR_OK) {
+		found = 0;
 		pr_err("Failed to open Capstone engine: %s\n", cs_strerror(cs_errno(handle)));
-		return;
+		return found;
 	}
 	count = cs_disasm(handle, code, sym->size, (uintptr_t)code, 0, &insn);
 	if (count == 0) {
 		cs_close(&handle);
 		pr_err("Failed to disassemble code: %s\n", cs_strerror(cs_errno(handle)));
-		return;
+		return found;
 	}
 	for (i = 0; i < count; i++) {
 		if (insn[i].id == X86_INS_JMP) {
@@ -635,11 +637,13 @@ static void xray_sled_nop_boost(struct mcount_dynamic_info *mdi, struct uftrace_
 			if (memcmp(jmp_addr, xray_jmp_pat, sizeof(xray_jmp_pat)) == 0) {
 				memcpy(jmp_addr, nop11, sizeof(nop11));
 				__builtin___clear_cache((char *)jmp_addr, (char *)jmp_addr + 11);
+				found = 1;
 			}
 		}
 	}
 	cs_free(insn, count);
 	cs_close(&handle);
+	return found;
 }
 
 static void patch_normal_func_matched(struct mcount_dynamic_info *mdi, struct uftrace_mmap *map)
@@ -658,9 +662,9 @@ static void patch_normal_func_matched(struct mcount_dynamic_info *mdi, struct uf
 
 		if (skip_sym(sym, mdi, map, soname))
 			continue;
+		if (!xray_sled_nop_boost(mdi, sym))
+			continue;
 		found = true;
-
-		xray_sled_nop_boost(mdi, sym);
 		match = match_pattern_list(map, soname, sym->name);
 		if (!match)
 			continue;
