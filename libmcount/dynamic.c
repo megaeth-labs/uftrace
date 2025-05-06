@@ -620,6 +620,7 @@ static int xray_sled_nop_boost(struct mcount_dynamic_info *mdi, struct uftrace_s
 	size_t i, count;
 	unsigned char *code = (unsigned char *)sym->addr + mdi->map->start;
 
+	found = 0;
 	if (cs_open(CS_ARCH_X86, CS_MODE_64, &handle) != CS_ERR_OK) {
 		found = 0;
 		pr_err("Failed to open Capstone engine: %s\n", cs_strerror(cs_errno(handle)));
