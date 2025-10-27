@@ -206,3 +206,9 @@ The below is the way to compile uftrace together with libelf/libdw.
 `misc/install-elfutils.sh` downloads and builds elfutils and installs both
 libelf and libdw to prefix directory.  The installed libelf and libdw can be
 found using `--with-elfutils` in the `configure` script.
+
+Small non-code contribution:
+- Added context for researchers in README
+- Linked official MegaETH and EigenLayer resources
+- No functional code changes
+
