@@ -72,10 +72,8 @@ static bool can_use_fast_libmcount(struct motrace_opts *opts)
 		return false;
 	if (opts->depth != MCOUNT_DEFAULT_DEPTH)
 		return false;
-	if (getenv("MOTRACE_FILTER") || getenv("MOTRACE_TRIGGER") || getenv("MOTRACE_ARGUMENT") ||
-	    getenv("MOTRACE_RETVAL") || getenv("MOTRACE_PATCH") || getenv("MOTRACE_SCRIPT") ||
-	    getenv("MOTRACE_AUTO_ARGS") || getenv("MOTRACE_WATCH") || getenv("MOTRACE_CALLER") ||
-	    getenv("MOTRACE_SIGNAL") || getenv("MOTRACE_AGENT") || getenv("MOTRACE_LOCATION"))
+	if (getenv("MOTRACE_PATCH") || getenv("MOTRACE_SCRIPT") || getenv("MOTRACE_WATCH") ||
+	    getenv("MOTRACE_AGENT"))
 		return false;
 	return true;
 }
@@ -170,55 +168,6 @@ static void setup_child_environ(struct motrace_opts *opts, int argc, char *argv[
 	}
 #endif
 
-	if (opts->filter) {
-		char *filter_str = motrace_clear_kernel(opts->filter);
-
-		if (filter_str) {
-			setenv("MOTRACE_FILTER", filter_str, 1);
-			free(filter_str);
-		}
-	}
-
-	if (opts->loc_filter) {
-		char *loc_str = motrace_clear_kernel(opts->loc_filter);
-
-		if (loc_str) {
-			setenv("MOTRACE_LOCATION", loc_str, 1);
-			setenv("MOTRACE_SRCLINE", "1", 1);
-			free(loc_str);
-		}
-	}
-
-	if (opts->trigger) {
-		char *trigger_str = motrace_clear_kernel(opts->trigger);
-
-		if (trigger_str) {
-			setenv("MOTRACE_TRIGGER", trigger_str, 1);
-			free(trigger_str);
-		}
-	}
-
-	if (opts->args) {
-		char *arg_str = motrace_clear_kernel(opts->args);
-
-		if (arg_str) {
-			setenv("MOTRACE_ARGUMENT", arg_str, 1);
-			free(arg_str);
-		}
-	}
-
-	if (opts->retval) {
-		char *retval_str = motrace_clear_kernel(opts->retval);
-
-		if (retval_str) {
-			setenv("MOTRACE_RETVAL", retval_str, 1);
-			free(retval_str);
-		}
-	}
-
-	if (opts->auto_args)
-		setenv("MOTRACE_AUTO_ARGS", "1", 1);
-
 	if (opts->patch) {
 		char *patch_str = motrace_clear_kernel(opts->patch);
 
@@ -258,15 +207,6 @@ static void setup_child_environ(struct motrace_opts *opts, int argc, char *argv[
 	if (opts->threshold) {
 		snprintf(buf, sizeof(buf), "%" PRIu64, opts->threshold);
 		setenv("MOTRACE_THRESHOLD", buf, 1);
-	}
-
-	if (opts->caller) {
-		char *caller_str = motrace_clear_kernel(opts->caller);
-
-		if (caller_str) {
-			setenv("MOTRACE_CALLER", caller_str, 1);
-			free(caller_str);
-		}
 	}
 
 	if (opts->libcall) {
@@ -315,9 +255,6 @@ static void setup_child_environ(struct motrace_opts *opts, int argc, char *argv[
 
 	if (opts->patt_type != PATT_REGEX)
 		setenv("MOTRACE_PATTERN", get_filter_pattern(opts->patt_type), 1);
-
-	if (opts->sig_trigger)
-		setenv("MOTRACE_SIGNAL", opts->sig_trigger, 1);
 
 	if (opts->srcline)
 		setenv("MOTRACE_SRCLINE", "1", 1);
@@ -393,17 +330,8 @@ static uint64_t calc_feat_mask(struct motrace_opts *opts)
 	/* save mcount_max_stack */
 	features |= MAX_STACK;
 
-	/* provide automatic argument/return value spec */
-	features |= AUTO_ARGS;
-
 	if (opts->libcall)
 		features |= PLTHOOK;
-
-	if (opts->args || opts->auto_args)
-		features |= ARGUMENT;
-
-	if (opts->retval || opts->auto_args)
-		features |= RETVAL;
 
 	if (opts->event)
 		features |= EVENT;
@@ -1479,8 +1407,6 @@ static void print_child_usage(struct rusage *ru)
 	"\tThis machine type (%u) is not supported currently.\n"                                   \
 	"\tSorry about that!\n"
 
-#define ARGUMENT_MSG "motrace: -A or -R might not work for binaries with -finstrument-functions\n"
-
 #define STATIC_MSG                                                                                 \
 	"Cannot trace static binary: %s\n"                                                         \
 	"\tIt seems to be compiled with -static, rebuild the binary without it.\n"
@@ -1622,10 +1548,6 @@ again:
 		if (chk_type == TRACE_NONE && !opts->patch) {
 			/* there's no function to trace */
 			pr_err_ns(MCOUNT_MSG, "mcount", opts->exename);
-		}
-		else if (chk_type == TRACE_CYGPROF && (opts->args || opts->retval)) {
-			/* arg/retval doesn't support -finstrument-functions */
-			pr_out(ARGUMENT_MSG);
 		}
 		else if (chk_type == TRACE_ERROR) {
 			pr_err_ns("Cannot check '%s'\n", opts->exename);
@@ -1933,9 +1855,6 @@ static int do_main_loop(int ready[], struct motrace_opts *opts, int pid)
 	free(channel);
 	if (wd.pipefd < 0)
 		pr_err("cannot open pipe");
-
-	if (opts->sig_trigger)
-		pr_out("motrace: install signal handlers to task %d\n", pid);
 
 	setup_writers(&wd, opts);
 	start_tracing(&wd, opts, ready[1]);

@@ -132,11 +132,6 @@ __used static const char motrace_help[] =
 "  -b, --buffer=SIZE          Size of tracing buffer (default: "
 	stringify(SHMEM_BUFFER_SIZE_KB) "K)\n"
 "  -D, --depth=DEPTH          Trace functions within DEPTH\n"
-"  -F, --filter=FUNC          Only trace those FUNCs\n"
-"  -N, --notrace=FUNC         Exclude those FUNCs\n"
-"  -C, --caller-filter=FUNC   Only trace callers of those FUNCs\n"
-"  -H, --hide=FUNC            Hide FUNCs from trace\n"
-"  -L, --loc-filter=LOCATION  Only trace functions in the source LOCATION\n"
 "  -t, --time-filter=TIME     Only record functions which run at least TIME\n"
 "  -r, --time-range=TIME      Only record data in the given time range\n"
 "      --offcpu               Record thread CPU time for off-CPU analysis\n"
@@ -147,7 +142,7 @@ __used static const char motrace_help[] =
 "      --column-offset=DEPTH  Offset of each column (default: "
 	stringify(OPT_COLUMN_OFFSET) ")\n"
 "      --format=FORMAT        Use FORMAT for output: normal, html (default: normal), sym (nm)\n"
-"      --with-syms=DIR        Load symbols from DIR (for filters/analysis)\n"
+"      --with-syms=DIR        Load symbols from DIR (for analysis)\n"
 "      --output-dir=DIR       Output directory for 'nm --format=sym'\n"
 "      --diff=DATA            Report differences\n"
 "      --diff-policy=POLICY   Control diff report policy\n"
@@ -171,7 +166,7 @@ __used static const char motrace_footer[] =
 "\n";
 
 static const char motrace_shopts[] =
-	"+A:b:C:d:D:E:f:F:hH:lL:N:p:P:r:R:s:S:t:T:U:vVW:Z:aegh";
+	"+b:d:D:E:f:h:l:p:P:r:s:S:t:U:vVW:Z:egh";
 
 #define REQ_ARG(name, shopt) { #name, required_argument, 0, shopt }
 #define NO_ARG(name, shopt)  { #name, no_argument, 0, shopt }
@@ -179,15 +174,9 @@ static const char motrace_shopts[] =
 static const struct option motrace_options[] = {
 	REQ_ARG(libmcount-path, OPT_libmcount_path),
 	REQ_ARG(library-path, OPT_libmcount_path),
-	REQ_ARG(filter, 'F'),
-	REQ_ARG(notrace, 'N'),
 	REQ_ARG(depth, 'D'),
 	REQ_ARG(time-filter, 't'),
-	REQ_ARG(caller-filter, 'C'),
 	REQ_ARG(size-filter, 'Z'),
-	REQ_ARG(argument, 'A'),
-	REQ_ARG(retval, 'R'),
-	REQ_ARG(trigger, 'T'),
 	REQ_ARG(patch, 'P'),
 	REQ_ARG(unpatch, 'U'),
 	REQ_ARG(event, 'E'),
@@ -233,12 +222,8 @@ static const struct option motrace_options[] = {
 	REQ_ARG(with-syms, OPT_with_syms),
 	REQ_ARG(match, OPT_match_type),
 	NO_ARG(srcline, OPT_srcline),
-	NO_ARG(auto-args, 'a'),
 	NO_ARG(estimate-return, 'e'),
 	NO_ARG(agent, 'g'),
-	REQ_ARG(hide, 'H'),
-	REQ_ARG(loc-filter, OPT_loc_filter),
-	REQ_ARG(loc-filter-warning, 'L'), /* the long option is dummy, will change later */
 	NO_ARG(offcpu, OPT_offcpu),
 	NO_ARG(help, 'h'),
 	NO_ARG(usage, OPT_usage),
@@ -499,48 +484,12 @@ static bool is_libmcount_directory(const char *path)
 
 static int parse_option(struct motrace_opts *opts, int key, char *arg)
 {
-	char *pos;
-
 	switch (key) {
-	case 'F':
-		opts->filter = opt_add_string(opts->filter, arg);
-		break;
-
-	case 'N':
-		opts->filter = opt_add_prefix_string(opts->filter, "!", arg);
-		break;
-
-	case 'T':
-		opts->trigger = opt_add_string(opts->trigger, arg);
-		break;
-
 	case 'D':
 		opts->depth = strtol(arg, NULL, 0);
 		if (opts->depth <= 0 || opts->depth >= OPT_DEPTH_MAX) {
 			pr_use("invalid depth given: %s (ignoring..)\n", arg);
 			opts->depth = OPT_DEPTH_DEFAULT;
-		}
-		break;
-
-	case 'C':
-		opts->caller = opt_add_string(opts->caller, arg);
-		break;
-
-	case 'H':
-		opts->hide = opt_add_string(opts->hide, arg);
-		break;
-
-	case 'L':
-		if (is_libmcount_directory(arg))
-			pr_warn("--libmcount-path option should be used to set libmcount path.\n");
-		/* fall through */
-	case OPT_loc_filter:
-		pos = strstr(arg, "@hide");
-		if (!pos)
-			opts->loc_filter = opt_add_string(opts->loc_filter, arg);
-		else {
-			*pos = '\0';
-			opts->loc_filter = opt_add_prefix_string(opts->loc_filter, "!", arg);
 		}
 		break;
 
@@ -584,18 +533,6 @@ static int parse_option(struct motrace_opts *opts, int key, char *arg)
 			pr_use("--time-range cannot be used with --time-filter\n");
 			opts->range.start = opts->range.stop = 0;
 		}
-		break;
-
-	case 'A':
-		opts->args = opt_add_string(opts->args, arg);
-		break;
-
-	case 'R':
-		opts->retval = opt_add_string(opts->retval, arg);
-		break;
-
-	case 'a':
-		opts->auto_args = true;
 		break;
 
 	case 'l':
@@ -930,10 +867,6 @@ static int parse_option(struct motrace_opts *opts, int key, char *arg)
 		opts->no_event = true;
 		break;
 
-
-	case OPT_signal:
-		opts->sig_trigger = opt_add_string(opts->sig_trigger, arg);
-		break;
 
 	case OPT_srcline:
 		opts->srcline = true;
@@ -1419,8 +1352,8 @@ TEST_CASE(option_parsing2)
 		.mode = MOTRACE_MODE_INVALID,
 	};
 	char *argv[] = {
-		"motrace", "attach", "-v", "--data=abc.data", "-t", "1us", "-F", "foo", "-N",
-		"bar", "-p", "123",
+		"motrace", "attach", "-v", "--data=abc.data", "-t", "1us", "-D", "3", "-p",
+		"123",
 	};
 	int argc = ARRAY_SIZE(argv);
 	int saved_debug = debug;
@@ -1432,7 +1365,7 @@ TEST_CASE(option_parsing2)
 	TEST_EQ(debug, saved_debug + 1);
 	TEST_EQ(opts.threshold, (uint64_t)1000);
 	TEST_STREQ(opts.dirname, "abc.data");
-	TEST_STREQ(opts.filter, "foo;!bar");
+	TEST_EQ(opts.depth, 3);
 	TEST_EQ(opts.pid, 123);
 
 	free_opts(&opts);

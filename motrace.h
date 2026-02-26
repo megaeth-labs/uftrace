@@ -327,7 +327,7 @@ static inline uint64_t rdtsc(void)
 
 static inline bool opts_has_filter(struct motrace_opts *opts)
 {
-	return opts->filter || opts->trigger || opts->threshold || opts->depth != OPT_DEPTH_DEFAULT;
+	return opts->threshold || opts->depth != OPT_DEPTH_DEFAULT;
 }
 
 static inline bool has_perf_data(struct motrace_data *handle)

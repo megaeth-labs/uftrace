@@ -23,8 +23,7 @@ static volatile bool agent_run = false;
 
 #define MCOUNT_AGENT_CAPABILITIES                                                                  \
 	(MOTRACE_AGENT_OPT_TRACE | MOTRACE_AGENT_OPT_DEPTH | MOTRACE_AGENT_OPT_THRESHOLD |         \
-	 MOTRACE_AGENT_OPT_PATTERN | MOTRACE_AGENT_OPT_FILTER | MOTRACE_AGENT_OPT_CALLER |         \
-	 MOTRACE_AGENT_OPT_TRIGGER | MOTRACE_AGENT_OPT_MO_ATTACH | MOTRACE_AGENT_OPT_MO_DETACH)
+	 MOTRACE_AGENT_OPT_MO_ATTACH | MOTRACE_AGENT_OPT_MO_DETACH)
 
 /**
  * swap_triggers - atomically swap the pointer to a filter rbtree and free the
@@ -39,36 +38,6 @@ void swap_triggers(struct motrace_triggers_info **old, struct motrace_triggers_i
 	sleep(1); /* RCU-like grace period */
 	motrace_cleanup_triggers(tmp);
 	free(tmp);
-}
-
-/**
- * agent_setup_filter - update the registered filters from the agent
- * @filter_str - filters to add or remove
- * @triggers   - rbtree of tracing filters
- */
-static void agent_setup_filter(char *filter_str, struct motrace_triggers_info *triggers)
-{
-	motrace_setup_filter(filter_str, &mcount_sym_info, triggers, &mcount_filter_setting);
-}
-
-/**
- * agent_setup_caller_filter - update the registered caller filters from the agent
- * @caller_str - caller filters to add or remove
- * @triggers   - rbtree where the filters are stored
- */
-static void agent_setup_caller_filter(char *caller_str, struct motrace_triggers_info *triggers)
-{
-	motrace_setup_caller_filter(caller_str, &mcount_sym_info, triggers, &mcount_filter_setting);
-}
-
-/**
- * agent_setup_trigger - update the registered triggers from the agent
- * @trigger_str - trigger to add or remove
- * @triggers    - rbtree of tracing filters
- */
-static void agent_setup_trigger(char *trigger_str, struct motrace_triggers_info *triggers)
-{
-	motrace_setup_trigger(trigger_str, &mcount_sym_info, triggers, &mcount_filter_setting);
 }
 
 /**
@@ -156,8 +125,7 @@ static int agent_read_option(int fd, int *opt, void **value, size_t read_size)
  * @triggers - triggers definition and counters
  * @return   - 0 on success, -1 on failure
  */
-static int agent_apply_option(int opt, void *value, size_t size,
-			      struct motrace_triggers_info *triggers)
+static int agent_apply_option(int opt, void *value, size_t size)
 {
 	struct motrace_opts opts;
 	int ret = 0;
@@ -202,29 +170,6 @@ static int agent_apply_option(int opt, void *value, size_t size,
 			pr_dbg3("dynamic time threshold unchanged\n");
 		break;
 
-	case MOTRACE_AGENT_OPT_PATTERN:
-		opts.patt_type = *((int *)value);
-		if (opts.patt_type != mcount_filter_setting.ptype) {
-			mcount_filter_setting.ptype = opts.patt_type;
-			pr_dbg3("use pattern type %#x\n", opts.patt_type);
-		}
-		break;
-
-	case MOTRACE_AGENT_OPT_FILTER:
-		pr_dbg3("apply filter '%s' (size=%d)\n", value, size);
-		agent_setup_filter(value, triggers);
-		break;
-
-	case MOTRACE_AGENT_OPT_CALLER:
-		pr_dbg3("apply caller filter '%s' (size=%d)\n", value, size);
-		agent_setup_caller_filter(value, triggers);
-		break;
-
-	case MOTRACE_AGENT_OPT_TRIGGER:
-		pr_dbg3("apply trigger '%s' (size=%d)\n", value, size);
-		agent_setup_trigger(value, triggers);
-		break;
-
 	case MOTRACE_AGENT_OPT_MO_ATTACH:
 		pr_dbg3("mo attach (size=%d)\n", size);
 		if (mcount_mo_attach(value, size) < 0)
@@ -244,16 +189,6 @@ static int agent_apply_option(int opt, void *value, size_t size,
 	return ret;
 }
 
-static bool triggers_needs_copy(int opt)
-{
-	bool ret;
-#define MATCHING_OPTIONS                                                                           \
-	(MOTRACE_AGENT_OPT_FILTER | MOTRACE_AGENT_OPT_CALLER | MOTRACE_AGENT_OPT_TRIGGER)
-	ret = opt & MATCHING_OPTIONS;
-#undef MATCHING_OPTIONS
-	return ret;
-}
-
 /* Agent routine, applying instructions from the CLI. */
 static void *agent_apply_commands(void *arg)
 {
@@ -263,7 +198,6 @@ static void *agent_apply_commands(void *arg)
 	struct sockaddr_un addr;
 	void *value = NULL;
 	size_t size;
-	struct motrace_triggers_info *triggers_copy = NULL;
 
 	/* initialize agent */
 	sfd = agent_init(&addr);
@@ -319,13 +253,7 @@ static void *agent_apply_commands(void *arg)
 					break;
 				}
 
-				/* deep copy mcount_triggers for each connection (if needed) */
-				if (triggers_needs_copy(opt) && !triggers_copy) {
-					triggers_copy = xmalloc(sizeof(*triggers_copy));
-					*triggers_copy =
-						motrace_deep_copy_triggers(mcount_triggers);
-				}
-				status = agent_apply_option(opt, value, size, triggers_copy);
+				status = agent_apply_option(opt, value, size);
 				if (status == 0)
 					agent_message_send(cfd, MOTRACE_MSG_AGENT_OK, NULL, 0);
 				else
@@ -347,11 +275,6 @@ static void *agent_apply_commands(void *arg)
 				close_connection = true;
 				pr_dbg3("agent message not recognized\n");
 			}
-		}
-
-		if (triggers_copy) {
-			swap_triggers(&mcount_triggers, triggers_copy);
-			triggers_copy = NULL;
 		}
 
 		if (close(cfd) == -1)

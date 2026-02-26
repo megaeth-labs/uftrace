@@ -754,45 +754,6 @@ static void build_graph(struct motrace_opts *opts, struct motrace_data *handle, 
 	}
 }
 
-struct find_func_data {
-	char *name;
-	bool found;
-};
-
-static int find_func(struct motrace_session *s, void *arg)
-{
-	struct find_func_data *data = arg;
-	struct motrace_sym_info *sinfo = &s->sym_info;
-	struct motrace_mmap *map;
-
-	for_each_map(sinfo, map) {
-		if (map->mod == NULL)
-			continue;
-
-		if (find_symname(&map->mod->symtab, data->name)) {
-			data->found = true;
-			break;
-		}
-	}
-
-	return data->found;
-}
-
-static void synthesize_depth_trigger(struct motrace_opts *opts, struct motrace_data *handle,
-				     char *func)
-{
-	size_t old_len = opts->trigger ? strlen(opts->trigger) : 0;
-	size_t new_len = strlen(func) + 32;
-	struct find_func_data ffd = {
-		.name = func,
-	};
-
-	walk_sessions(&handle->sessions, find_func, &ffd);
-
-	opts->trigger = xrealloc(opts->trigger, old_len + new_len);
-	snprintf(opts->trigger + old_len, new_len, "%s%s@%sdepth=%d", old_len ? ";" : "", func,
-		 ffd.found ? "" : "kernel,", opts->depth);
-}
 
 static void reset_task_runtime(struct motrace_data *handle)
 {
@@ -1027,15 +988,6 @@ int command_graph(int argc, char *argv[], struct motrace_opts *opts)
 
 	if (!opts->show_task && opts->fields == NULL && (handle.hdr.feat_mask & OFFCPU))
 		opts->fields = "+offcpu";
-
-	if (opts->depth != OPT_DEPTH_DEFAULT) {
-		/*
-		 * Applying depth filter before the function might
-		 * lead to undesired result.  Set a synthetic depth
-		 * trigger to prevent the function from filtering out.
-		 */
-		synthesize_depth_trigger(opts, &handle, func);
-	}
 
 	fstack_setup_filters(opts, &handle);
 

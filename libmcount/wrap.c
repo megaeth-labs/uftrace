@@ -21,7 +21,6 @@ extern struct motrace_sym_info mcount_sym_info;
 struct dlopen_base_data {
 	const char *filename;
 	struct mcount_thread_data *mtdp;
-	struct motrace_triggers_info *triggers;
 	uint64_t timestamp;
 	void *handle;
 };
@@ -124,8 +123,6 @@ static int dlopen_base_callback(struct dl_phdr_info *info, size_t size, void *ar
 
 	mcount_dynamic_dlopen(&mcount_sym_info, info, p, map);
 
-	data->triggers = mcount_trigger_init(&mcount_filter_setting);
-
 	return 0;
 }
 
@@ -196,11 +193,6 @@ static char **collect_motrace_envp(void)
 #define ENV(_name) "MOTRACE_" #_name
 
 	const char *const motrace_env[] = {
-		ENV(FILTER),
-		ENV(TRIGGER),
-		ENV(ARGUMENT),
-		ENV(RETVAL),
-		ENV(AUTO_ARGS),
 		ENV(DEPTH),
 		ENV(DISABLED),
 		ENV(PIPE),
@@ -537,9 +529,6 @@ __visible_default void *dlopen(const char *filename, int flags)
 	data.mtdp = mtdp;
 	data.handle = ret;
 	dl_iterate_phdr(dlopen_base_callback, &data);
-
-	if (data.triggers)
-		swap_triggers(&mcount_triggers, data.triggers);
 
 	mcount_unguard_recursion(mtdp);
 	return ret;

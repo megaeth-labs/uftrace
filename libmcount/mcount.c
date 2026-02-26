@@ -409,68 +409,8 @@ static void mcount_signal_finish(void)
 
 struct motrace_triggers_info *mcount_trigger_init(struct motrace_filter_setting *filter_setting)
 {
-	struct motrace_triggers_info *triggers;
-	char *filter_str = getenv("MOTRACE_FILTER");
-	char *trigger_str = getenv("MOTRACE_TRIGGER");
-	char *argument_str = getenv("MOTRACE_ARGUMENT");
-	char *retval_str = getenv("MOTRACE_RETVAL");
-	char *autoargs_str = getenv("MOTRACE_AUTO_ARGS");
-	char *patch_str = getenv("MOTRACE_PATCH");
-	char *caller_str = getenv("MOTRACE_CALLER");
-	char *loc_str = getenv("MOTRACE_LOCATION");
-	bool needs_debug_info = false;
-
-	/* setup auto-args only if argument/return value is used */
-	if (argument_str || retval_str || autoargs_str ||
-	    (trigger_str && (strstr(trigger_str, "arg") || strstr(trigger_str, "retval")))) {
-		setup_auto_args(filter_setting);
-		needs_debug_info = true;
-	}
-
-	if (getenv("MOTRACE_SRCLINE"))
-		needs_debug_info = true;
-
-	/* use debug info if available */
-	if (needs_debug_info) {
-		prepare_debug_info(&mcount_sym_info, filter_setting->ptype, argument_str,
-				   retval_str, !!autoargs_str, !!patch_str);
-		save_debug_info(&mcount_sym_info, mcount_sym_info.dirname);
-	}
-
-	if (!filter_str && !trigger_str && !argument_str && !retval_str && !autoargs_str &&
-	    !caller_str && !loc_str)
-		return NULL;
-
-	triggers = xzalloc(sizeof(*triggers));
-	triggers->root = RB_ROOT;
-
-	filter_setting->auto_args = false;
-
-	motrace_setup_filter(filter_str, &mcount_sym_info, triggers, filter_setting);
-	motrace_setup_trigger(trigger_str, &mcount_sym_info, triggers, filter_setting);
-	motrace_setup_argument(argument_str, &mcount_sym_info, triggers, filter_setting);
-	motrace_setup_retval(retval_str, &mcount_sym_info, triggers, filter_setting);
-
-	if (needs_debug_info)
-		motrace_setup_loc_filter(loc_str, &mcount_sym_info, triggers, filter_setting);
-
-	if (caller_str)
-		motrace_setup_caller_filter(caller_str, &mcount_sym_info, triggers, filter_setting);
-
-	if (autoargs_str) {
-		char *autoarg = ".";
-		char *autoret = ".";
-
-		if (filter_setting->ptype == PATT_GLOB)
-			autoarg = autoret = "*";
-
-		filter_setting->auto_args = true;
-
-		motrace_setup_argument(autoarg, &mcount_sym_info, triggers, filter_setting);
-		motrace_setup_retval(autoret, &mcount_sym_info, triggers, filter_setting);
-	}
-
-	return triggers;
+	(void)filter_setting;
+	return NULL;
 }
 
 static void mcount_filter_init(struct motrace_filter_setting *filter_setting, bool force)
@@ -479,15 +419,17 @@ static void mcount_filter_init(struct motrace_filter_setting *filter_setting, bo
 	filter_setting->arch = host_cpu_arch();
 
 	load_module_symtabs(&mcount_sym_info);
+	mcount_signal_init(NULL, filter_setting);
 
-	mcount_signal_init(getenv("MOTRACE_SIGNAL"), filter_setting);
-
-	mcount_triggers = mcount_trigger_init(filter_setting);
-	if (mcount_triggers == NULL) {
-		/* make sure it has the root of triggers */
-		mcount_triggers = xzalloc(sizeof(*mcount_triggers));
-		mcount_triggers->root = RB_ROOT;
+	if (getenv("MOTRACE_SRCLINE")) {
+		prepare_debug_info(&mcount_sym_info, filter_setting->ptype, NULL, NULL, false,
+				   force);
+		save_debug_info(&mcount_sym_info, mcount_sym_info.dirname);
 	}
+
+	/* keep an empty trigger tree for fast path lookup */
+	mcount_triggers = xzalloc(sizeof(*mcount_triggers));
+	mcount_triggers->root = RB_ROOT;
 
 	if (getenv("MOTRACE_DEPTH"))
 		mcount_depth = strtol(getenv("MOTRACE_DEPTH"), NULL, 0);
