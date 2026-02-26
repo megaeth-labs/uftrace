@@ -10,15 +10,15 @@
 #define PR_FMT "kernel"
 #define PR_DOMAIN DBG_KERNEL
 
-#include "uftrace.h"
+#include "motrace.h"
 #include "utils/kernel-parser.h"
 #include "utils/kernel.h"
 #include "utils/utils.h"
 
 /* To check if there's (user) data for the task (tid) after read kernel data */
-extern struct uftrace_task_reader *get_task_handle(struct uftrace_data *handle, int tid);
+extern struct motrace_task_reader *get_task_handle(struct motrace_data *handle, int tid);
 
-int kparser_init(struct uftrace_kernel_parser *kp)
+int kparser_init(struct motrace_kernel_parser *kp)
 {
 	memset(kp, 0, sizeof(*kp));
 
@@ -30,7 +30,7 @@ int kparser_init(struct uftrace_kernel_parser *kp)
 	return 0;
 }
 
-int kparser_exit(struct uftrace_kernel_parser *kp)
+int kparser_exit(struct motrace_kernel_parser *kp)
 {
 	tep_free(kp->tep);
 	trace_seq_destroy(&kp->seqbuf);
@@ -39,17 +39,17 @@ int kparser_exit(struct uftrace_kernel_parser *kp)
 	return 0;
 }
 
-bool kparser_ready(struct uftrace_kernel_parser *kp)
+bool kparser_ready(struct motrace_kernel_parser *kp)
 {
 	return kp->tep != NULL;
 }
 
-int kparser_strerror(struct uftrace_kernel_parser *kp, int err, char *buf, int len)
+int kparser_strerror(struct motrace_kernel_parser *kp, int err, char *buf, int len)
 {
 	return tep_strerror(kp->tep, err, buf, len);
 }
 
-void kparser_set_info(struct uftrace_kernel_parser *kp, int page_size, int long_size,
+void kparser_set_info(struct motrace_kernel_parser *kp, int page_size, int long_size,
 		      bool is_big_endian)
 {
 	bool is_host_bigendian = (strcmp(get_endian_str(), "BE") == 0);
@@ -62,19 +62,19 @@ void kparser_set_info(struct uftrace_kernel_parser *kp, int page_size, int long_
 	tep_set_local_bigendian(kp->tep, is_host_bigendian);
 }
 
-int kparser_read_header(struct uftrace_kernel_parser *kp, char *buf, int len)
+int kparser_read_header(struct motrace_kernel_parser *kp, char *buf, int len)
 {
 	int long_size = tep_get_long_size(kp->tep);
 
 	return tep_parse_header_page(kp->tep, buf, len, long_size);
 }
 
-int kparser_read_event(struct uftrace_kernel_parser *kp, const char *sys, char *buf, int len)
+int kparser_read_event(struct motrace_kernel_parser *kp, const char *sys, char *buf, int len)
 {
 	return tep_parse_event(kp->tep, buf, len, sys);
 }
 
-int kparser_prepare_buffers(struct uftrace_kernel_parser *kp, int nr_cpus)
+int kparser_prepare_buffers(struct motrace_kernel_parser *kp, int nr_cpus)
 {
 	kp->kbufs = xcalloc(nr_cpus, sizeof(*kp->kbufs));
 	kp->fds = xcalloc(nr_cpus, sizeof(*kp->fds));
@@ -86,7 +86,7 @@ int kparser_prepare_buffers(struct uftrace_kernel_parser *kp, int nr_cpus)
 	return 0;
 }
 
-int kparser_release_buffers(struct uftrace_kernel_parser *kp, int nr_cpus)
+int kparser_release_buffers(struct motrace_kernel_parser *kp, int nr_cpus)
 {
 	free(kp->kbufs);
 	free(kp->fds);
@@ -98,7 +98,7 @@ int kparser_release_buffers(struct uftrace_kernel_parser *kp, int nr_cpus)
 	return 0;
 }
 
-static int kparser_prepare_kbuffer(struct uftrace_kernel_parser *kp, int cpu)
+static int kparser_prepare_kbuffer(struct motrace_kernel_parser *kp, int cpu)
 {
 	kp->mmaps[cpu] =
 		mmap(NULL, kp->pagesize, PROT_READ, MAP_PRIVATE, kp->fds[cpu], kp->offsets[cpu]);
@@ -114,7 +114,7 @@ static int kparser_prepare_kbuffer(struct uftrace_kernel_parser *kp, int cpu)
 	return 0;
 }
 
-int kparser_prepare_cpu(struct uftrace_kernel_parser *kp, const char *filename, int cpu)
+int kparser_prepare_cpu(struct motrace_kernel_parser *kp, const char *filename, int cpu)
 {
 	struct stat stbuf;
 	enum kbuffer_endian endian = KBUFFER_ENDIAN_LITTLE;
@@ -147,7 +147,7 @@ int kparser_prepare_cpu(struct uftrace_kernel_parser *kp, const char *filename, 
 	return kparser_prepare_kbuffer(kp, cpu);
 }
 
-int kparser_release_cpu(struct uftrace_kernel_parser *kp, int cpu)
+int kparser_release_cpu(struct motrace_kernel_parser *kp, int cpu)
 {
 	close(kp->fds[cpu]);
 	kp->fds[cpu] = -1;
@@ -164,7 +164,7 @@ int kparser_release_cpu(struct uftrace_kernel_parser *kp, int cpu)
 static int funcgraph_entry_handler(struct trace_seq *s, struct tep_record *record,
 				   struct tep_event *event, void *context)
 {
-	struct uftrace_kernel_parser *kp = context;
+	struct motrace_kernel_parser *kp = context;
 	unsigned long long depth;
 	unsigned long long addr;
 
@@ -174,7 +174,7 @@ static int funcgraph_entry_handler(struct trace_seq *s, struct tep_record *recor
 	if (tep_get_any_field_val(s, event, "func", record, &addr, 1))
 		return -1;
 
-	kp->rec.type = UFTRACE_ENTRY;
+	kp->rec.type = MOTRACE_ENTRY;
 	kp->rec.time = record->ts;
 	kp->rec.addr = addr;
 	kp->rec.depth = depth;
@@ -186,7 +186,7 @@ static int funcgraph_entry_handler(struct trace_seq *s, struct tep_record *recor
 static int funcgraph_exit_handler(struct trace_seq *s, struct tep_record *record,
 				  struct tep_event *event, void *context)
 {
-	struct uftrace_kernel_parser *kp = context;
+	struct motrace_kernel_parser *kp = context;
 	unsigned long long depth;
 	unsigned long long addr;
 
@@ -196,7 +196,7 @@ static int funcgraph_exit_handler(struct trace_seq *s, struct tep_record *record
 	if (tep_get_any_field_val(s, event, "func", record, &addr, 1))
 		return -1;
 
-	kp->rec.type = UFTRACE_EXIT;
+	kp->rec.type = MOTRACE_EXIT;
 	kp->rec.time = record->ts;
 	kp->rec.addr = addr;
 	kp->rec.depth = depth;
@@ -208,9 +208,9 @@ static int funcgraph_exit_handler(struct trace_seq *s, struct tep_record *record
 static int generic_event_handler(struct trace_seq *s, struct tep_record *record,
 				 struct tep_event *event, void *context)
 {
-	struct uftrace_kernel_parser *kp = context;
+	struct motrace_kernel_parser *kp = context;
 
-	kp->rec.type = UFTRACE_EVENT;
+	kp->rec.type = MOTRACE_EVENT;
 	kp->rec.time = record->ts;
 	kp->rec.addr = event->id;
 	kp->rec.depth = 0;
@@ -220,7 +220,7 @@ static int generic_event_handler(struct trace_seq *s, struct tep_record *record,
 	return 1;
 }
 
-void kparser_register_handler(struct uftrace_kernel_parser *kp, const char *sys, const char *event)
+void kparser_register_handler(struct motrace_kernel_parser *kp, const char *sys, const char *event)
 {
 	if (!strcmp(sys, "ftrace")) {
 		if (!strcmp(event, "funcgraph_entry"))
@@ -234,7 +234,7 @@ void kparser_register_handler(struct uftrace_kernel_parser *kp, const char *sys,
 		tep_register_event_handler(kp->tep, -1, sys, event, generic_event_handler, kp);
 }
 
-static int kparser_next_page(struct uftrace_kernel_parser *kp, int cpu)
+static int kparser_next_page(struct motrace_kernel_parser *kp, int cpu)
 {
 	munmap(kp->mmaps[cpu], kp->pagesize);
 	kp->mmaps[cpu] = NULL;
@@ -248,7 +248,7 @@ static int kparser_next_page(struct uftrace_kernel_parser *kp, int cpu)
 }
 
 /* return 0 on success, 1 on EOF or -1 on error */
-int kparser_read_data(struct uftrace_kernel_parser *kp, struct uftrace_data *handle, int cpu,
+int kparser_read_data(struct motrace_kernel_parser *kp, struct motrace_data *handle, int cpu,
 		      int *ptid)
 {
 	void *data;
@@ -297,7 +297,7 @@ int kparser_read_data(struct uftrace_kernel_parser *kp, struct uftrace_data *han
 	 * some event might be saved for unrelated task.  In this case
 	 * pid for our child would be in a different field (not common_pid).
 	 */
-	if (kp->rec.type == UFTRACE_EVENT && get_task_handle(handle, tid) == NULL) {
+	if (kp->rec.type == MOTRACE_EVENT && get_task_handle(handle, tid) == NULL) {
 		unsigned long long try_tid;
 
 		/* for sched_switch event */
@@ -315,39 +315,39 @@ int kparser_read_data(struct uftrace_kernel_parser *kp, struct uftrace_data *han
 	return 0;
 }
 
-int kparser_data_size(struct uftrace_kernel_parser *kp, int cpu)
+int kparser_data_size(struct motrace_kernel_parser *kp, int cpu)
 {
 	return kp->sizes[cpu];
 }
 
 /* This is valid only after kparser_read_data() */
-void *kparser_trace_buffer(struct uftrace_kernel_parser *kp)
+void *kparser_trace_buffer(struct motrace_kernel_parser *kp)
 {
 	return kp->seqbuf.buffer;
 }
 
 /* This is valid only after kparser_read_data() */
-int kparser_trace_buflen(struct uftrace_kernel_parser *kp)
+int kparser_trace_buflen(struct motrace_kernel_parser *kp)
 {
 	return kp->seqbuf.len;
 }
 
-int kparser_missed_events(struct uftrace_kernel_parser *kp, int cpu)
+int kparser_missed_events(struct motrace_kernel_parser *kp, int cpu)
 {
 	return kp->missed_events[cpu];
 }
 
-void kparser_clear_missed(struct uftrace_kernel_parser *kp, int cpu)
+void kparser_clear_missed(struct motrace_kernel_parser *kp, int cpu)
 {
 	kp->missed_events[cpu] = 0;
 }
 
-void *kparser_find_event(struct uftrace_kernel_parser *kp, int evt_id)
+void *kparser_find_event(struct motrace_kernel_parser *kp, int evt_id)
 {
 	return tep_find_event(kp->tep, evt_id);
 }
 
-char *kparser_event_name(struct uftrace_kernel_parser *kp, void *evt, char *buf, int len)
+char *kparser_event_name(struct motrace_kernel_parser *kp, void *evt, char *buf, int len)
 {
 	struct tep_event *event = evt;
 
@@ -356,22 +356,22 @@ char *kparser_event_name(struct uftrace_kernel_parser *kp, void *evt, char *buf,
 	return buf;
 }
 
-int64_t __kparser_curr_offset(struct uftrace_kernel_parser *kp, int cpu)
+int64_t __kparser_curr_offset(struct motrace_kernel_parser *kp, int cpu)
 {
 	return kp->offsets[cpu] + kbuffer_curr_offset(kp->kbufs[cpu]);
 }
 
-void *__kparser_read_offset(struct uftrace_kernel_parser *kp, int cpu, int64_t off)
+void *__kparser_read_offset(struct motrace_kernel_parser *kp, int cpu, int64_t off)
 {
 	return kbuffer_read_at_offset(kp->kbufs[cpu], off, NULL);
 }
 
-void *__kparser_next_event(struct uftrace_kernel_parser *kp, int cpu)
+void *__kparser_next_event(struct motrace_kernel_parser *kp, int cpu)
 {
 	return kbuffer_next_event(kp->kbufs[cpu], NULL);
 }
 
-int __kparser_event_size(struct uftrace_kernel_parser *kp, int cpu)
+int __kparser_event_size(struct motrace_kernel_parser *kp, int cpu)
 {
 	return kbuffer_event_size(kp->kbufs[cpu]);
 }

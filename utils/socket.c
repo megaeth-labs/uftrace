@@ -3,7 +3,7 @@
 #include <sys/un.h>
 #include <unistd.h>
 
-#include "uftrace.h"
+#include "motrace.h"
 #include "utils/socket.h"
 #include "utils/utils.h"
 
@@ -54,7 +54,13 @@ int agent_listen(int fd, struct sockaddr_un *addr)
 /* Client side: connect to an agent socket */
 int agent_connect(int fd, struct sockaddr_un *addr)
 {
-	if (connect(fd, (struct sockaddr *)addr, sizeof(struct sockaddr_un)) == -1) {
+	int ret;
+
+	do {
+		ret = connect(fd, (struct sockaddr *)addr, sizeof(struct sockaddr_un));
+	} while (ret == -1 && errno == EINTR);
+
+	if (ret == -1) {
 		pr_warn("cannot connect to socket '%s': %s\n", addr->sun_path, strerror(errno));
 		return -1;
 	}
@@ -78,8 +84,8 @@ int agent_accept(int fd)
  */
 int agent_message_send(int fd, int type, void *data, size_t size)
 {
-	struct uftrace_msg msg = {
-		.magic = UFTRACE_MSG_MAGIC,
+	struct motrace_msg msg = {
+		.magic = MOTRACE_MSG_MAGIC,
 		.type = type,
 		.len = size,
 	};
@@ -112,14 +118,14 @@ int agent_message_send(int fd, int type, void *data, size_t size)
  * @msg    - received message head
  * @return - status code, negative for error
  */
-int agent_message_read_head(int fd, struct uftrace_msg *msg)
+int agent_message_read_head(int fd, struct motrace_msg *msg)
 {
 	if (read_all(fd, msg, sizeof(*msg)) < 0) {
 		pr_dbg4("error reading agent message header\n");
 		return -1;
 	}
 
-	if (msg->magic != UFTRACE_MSG_MAGIC) {
+	if (msg->magic != MOTRACE_MSG_MAGIC) {
 		pr_dbg4("invalid agent message received\n");
 		return -1;
 	}
@@ -133,7 +139,7 @@ int agent_message_read_head(int fd, struct uftrace_msg *msg)
  * @response - ack from agent
  * @return - status: data or error code, negative on error
  */
-int agent_message_read_response(int fd, struct uftrace_msg *response)
+int agent_message_read_response(int fd, struct motrace_msg *response)
 {
 	int status = 0;
 

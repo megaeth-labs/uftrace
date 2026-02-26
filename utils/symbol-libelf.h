@@ -1,16 +1,16 @@
-#ifndef UFTRACE_SYMBOL_LIBELF_H
-#define UFTRACE_SYMBOL_LIBELF_H
+#ifndef MOTRACE_SYMBOL_LIBELF_H
+#define MOTRACE_SYMBOL_LIBELF_H
 
 #include <gelf.h>
 
-struct uftrace_elf_data {
+struct motrace_elf_data {
 	int fd;
 	Elf *handle;
 	void *dwfl;
 	GElf_Ehdr ehdr;
 };
 
-struct uftrace_elf_iter {
+struct motrace_elf_iter {
 	size_t i;
 	size_t nr;
 
@@ -111,12 +111,12 @@ struct uftrace_elf_iter {
 	     ((iter)->note_desc = (iter)->data->d_buf + (size_t)(iter)->note_desc);                \
 	     (iter)->i = (iter)->nr)
 
-int elf_init(const char *filename, struct uftrace_elf_data *elf);
-void elf_finish(struct uftrace_elf_data *elf);
-int elf_retry(const char *filename, struct uftrace_elf_data *elf);
+int elf_init(const char *filename, struct motrace_elf_data *elf);
+void elf_finish(struct motrace_elf_data *elf);
+int elf_retry(const char *filename, struct motrace_elf_data *elf);
 
-void elf_get_secdata(struct uftrace_elf_data *elf, struct uftrace_elf_iter *iter);
-void elf_read_secdata(struct uftrace_elf_data *elf, struct uftrace_elf_iter *iter, unsigned offset,
+void elf_get_secdata(struct motrace_elf_data *elf, struct motrace_elf_iter *iter);
+void elf_read_secdata(struct motrace_elf_data *elf, struct motrace_elf_iter *iter, unsigned offset,
 		      void *buf, size_t len);
 
-#endif /* UFTRACE_SYMBOL_LIBELF_H */
+#endif /* MOTRACE_SYMBOL_LIBELF_H */

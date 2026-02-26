@@ -1,5 +1,5 @@
 /*
- * debug routines for uftrace
+ * debug routines for motrace
  *
  * Copyright (C) 2014-2017, LG Electronics, Namhyung Kim <namhyung@gmail.com>
  *
@@ -118,7 +118,7 @@ static bool check_busybox(const char *pager)
 check:
 	path = realpath(pager, NULL);
 	if (path) {
-		ret = !strncmp("busybox", uftrace_basename(path), 7);
+		ret = !strncmp("busybox", motrace_basename(path), 7);
 		free(path);
 	}
 
@@ -230,7 +230,7 @@ void __pr_err_s(const char *fmt, ...)
 	vfprintf(logfp, fmt, ap);
 	va_end(ap);
 
-	fprintf(logfp, ": %s\n", uftrace_strerror(saved_errno, buf, sizeof(buf)));
+	fprintf(logfp, ": %s\n", motrace_strerror(saved_errno, buf, sizeof(buf)));
 
 	color(TERM_COLOR_RESET, logfp);
 
@@ -381,6 +381,7 @@ static void __print_time_unit(int64_t delta_nsec, bool needs_sign)
 
 void print_time_unit(uint64_t delta_nsec)
 {
+	delta_nsec = delta_nsec * 1000 / tsc_freq_mhz;
 	__print_time_unit(delta_nsec, false);
 }
 
@@ -390,6 +391,8 @@ void print_diff_percent(uint64_t base_nsec, uint64_t pair_nsec)
 	const char *sc;
 	const char *ec = get_color(COLOR_CODE_RESET);
 
+	base_nsec = base_nsec * 1000 / tsc_freq_mhz;
+	pair_nsec = pair_nsec * 1000 / tsc_freq_mhz;
 	if (base_nsec == 0) {
 		sc = get_color(COLOR_CODE_RED);
 		pr_out("%s%7s%s ", sc, "N/A", ec);
@@ -420,6 +423,8 @@ void print_diff_percent(uint64_t base_nsec, uint64_t pair_nsec)
 
 void print_diff_time_unit(uint64_t base_nsec, uint64_t pair_nsec)
 {
+	base_nsec = base_nsec * 1000 / tsc_freq_mhz;
+	pair_nsec = pair_nsec * 1000 / tsc_freq_mhz;
 	if (base_nsec == pair_nsec)
 		pr_out("%11s", "0 us");
 	else

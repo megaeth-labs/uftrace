@@ -5,7 +5,7 @@
 #include "utils/utils.h"
 
 /* FIXME: x0 is overwritten before calling _mcount() */
-static int mcount_get_register_arg(struct mcount_arg_context *ctx, struct uftrace_arg_spec *spec)
+static int mcount_get_register_arg(struct mcount_arg_context *ctx, struct motrace_arg_spec *spec)
 {
 	struct mcount_regs *regs = ctx->regs;
 	int reg_idx;
@@ -108,7 +108,7 @@ static int mcount_get_register_arg(struct mcount_arg_context *ctx, struct uftrac
 	return 0;
 }
 
-static void mcount_get_stack_arg(struct mcount_arg_context *ctx, struct uftrace_arg_spec *spec)
+static void mcount_get_stack_arg(struct mcount_arg_context *ctx, struct motrace_arg_spec *spec)
 {
 	int offset = 1;
 	unsigned long *addr = ctx->stack_base;
@@ -146,9 +146,9 @@ static void mcount_get_stack_arg(struct mcount_arg_context *ctx, struct uftrace_
 	}
 }
 
-static void mcount_get_struct_arg(struct mcount_arg_context *ctx, struct uftrace_arg_spec *spec)
+static void mcount_get_struct_arg(struct mcount_arg_context *ctx, struct motrace_arg_spec *spec)
 {
-	struct uftrace_arg_spec reg_spec = {
+	struct motrace_arg_spec reg_spec = {
 		.type = ARG_TYPE_REG,
 	};
 	void *ptr = ctx->val.p;
@@ -183,7 +183,7 @@ static void mcount_get_struct_arg(struct mcount_arg_context *ctx, struct uftrace
 	}
 }
 
-void mcount_arch_get_arg(struct mcount_arg_context *ctx, struct uftrace_arg_spec *spec)
+void mcount_arch_get_arg(struct mcount_arg_context *ctx, struct motrace_arg_spec *spec)
 {
 	if (spec->fmt == ARG_FMT_STRUCT) {
 		mcount_get_struct_arg(ctx, spec);
@@ -198,7 +198,7 @@ void mcount_arch_get_arg(struct mcount_arg_context *ctx, struct uftrace_arg_spec
 		mcount_get_stack_arg(ctx, spec);
 }
 
-void mcount_arch_get_retval(struct mcount_arg_context *ctx, struct uftrace_arg_spec *spec)
+void mcount_arch_get_retval(struct mcount_arg_context *ctx, struct motrace_arg_spec *spec)
 {
 	/* don't support long double, treat it as double */
 	if (unlikely(spec->size == 10))
@@ -229,7 +229,7 @@ void mcount_arch_get_retval(struct mcount_arg_context *ctx, struct uftrace_arg_s
 
 unsigned long mcount_arch_plthook_addr(struct plthook_data *pd, int idx)
 {
-	struct uftrace_symbol *sym;
+	struct motrace_symbol *sym;
 
 	sym = &pd->dsymtab.sym[0];
 	return sym->addr - ARCH_PLT0_SIZE;

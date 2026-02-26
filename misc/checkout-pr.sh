@@ -13,7 +13,7 @@ fi
 pr=$1
 pr_json="pr.json"
 
-curl -o $pr_json https://api.github.com/repos/namhyung/uftrace/pulls/$pr
+curl -o $pr_json https://api.github.com/repos/namhyung/motrace/pulls/$pr
 repo=$(jq -r '.head.repo.html_url' $pr_json)
 refspec=$(jq -r '.head.ref' $pr_json)
 git fetch $repo $refspec && git checkout -B pull/$pr FETCH_HEAD

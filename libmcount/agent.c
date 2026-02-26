@@ -22,9 +22,9 @@ static pthread_t agent;
 static volatile bool agent_run = false;
 
 #define MCOUNT_AGENT_CAPABILITIES                                                                  \
-	(UFTRACE_AGENT_OPT_TRACE | UFTRACE_AGENT_OPT_DEPTH | UFTRACE_AGENT_OPT_THRESHOLD |         \
-	 UFTRACE_AGENT_OPT_PATTERN | UFTRACE_AGENT_OPT_FILTER | UFTRACE_AGENT_OPT_CALLER |         \
-	 UFTRACE_AGENT_OPT_TRIGGER)
+	(MOTRACE_AGENT_OPT_TRACE | MOTRACE_AGENT_OPT_DEPTH | MOTRACE_AGENT_OPT_THRESHOLD |         \
+	 MOTRACE_AGENT_OPT_PATTERN | MOTRACE_AGENT_OPT_FILTER | MOTRACE_AGENT_OPT_CALLER |         \
+	 MOTRACE_AGENT_OPT_TRIGGER | MOTRACE_AGENT_OPT_MO_ATTACH | MOTRACE_AGENT_OPT_MO_DETACH)
 
 /**
  * swap_triggers - atomically swap the pointer to a filter rbtree and free the
@@ -32,12 +32,12 @@ static volatile bool agent_run = false;
  * @old - pointer to the tree to deprecate
  * @new - new version of the tree to use
  */
-void swap_triggers(struct uftrace_triggers_info **old, struct uftrace_triggers_info *new)
+void swap_triggers(struct motrace_triggers_info **old, struct motrace_triggers_info *new)
 {
-	struct uftrace_triggers_info *tmp;
+	struct motrace_triggers_info *tmp;
 	tmp = __sync_val_compare_and_swap(old, *old, new);
 	sleep(1); /* RCU-like grace period */
-	uftrace_cleanup_triggers(tmp);
+	motrace_cleanup_triggers(tmp);
 	free(tmp);
 }
 
@@ -46,9 +46,9 @@ void swap_triggers(struct uftrace_triggers_info **old, struct uftrace_triggers_i
  * @filter_str - filters to add or remove
  * @triggers   - rbtree of tracing filters
  */
-static void agent_setup_filter(char *filter_str, struct uftrace_triggers_info *triggers)
+static void agent_setup_filter(char *filter_str, struct motrace_triggers_info *triggers)
 {
-	uftrace_setup_filter(filter_str, &mcount_sym_info, triggers, &mcount_filter_setting);
+	motrace_setup_filter(filter_str, &mcount_sym_info, triggers, &mcount_filter_setting);
 }
 
 /**
@@ -56,9 +56,9 @@ static void agent_setup_filter(char *filter_str, struct uftrace_triggers_info *t
  * @caller_str - caller filters to add or remove
  * @triggers   - rbtree where the filters are stored
  */
-static void agent_setup_caller_filter(char *caller_str, struct uftrace_triggers_info *triggers)
+static void agent_setup_caller_filter(char *caller_str, struct motrace_triggers_info *triggers)
 {
-	uftrace_setup_caller_filter(caller_str, &mcount_sym_info, triggers, &mcount_filter_setting);
+	motrace_setup_caller_filter(caller_str, &mcount_sym_info, triggers, &mcount_filter_setting);
 }
 
 /**
@@ -66,9 +66,9 @@ static void agent_setup_caller_filter(char *caller_str, struct uftrace_triggers_
  * @trigger_str - trigger to add or remove
  * @triggers    - rbtree of tracing filters
  */
-static void agent_setup_trigger(char *trigger_str, struct uftrace_triggers_info *triggers)
+static void agent_setup_trigger(char *trigger_str, struct motrace_triggers_info *triggers)
 {
-	uftrace_setup_trigger(trigger_str, &mcount_sym_info, triggers, &mcount_filter_setting);
+	motrace_setup_trigger(trigger_str, &mcount_sym_info, triggers, &mcount_filter_setting);
 }
 
 /**
@@ -157,14 +157,24 @@ static int agent_read_option(int fd, int *opt, void **value, size_t read_size)
  * @return   - 0 on success, -1 on failure
  */
 static int agent_apply_option(int opt, void *value, size_t size,
-			      struct uftrace_triggers_info *triggers)
+			      struct motrace_triggers_info *triggers)
 {
-	struct uftrace_opts opts;
+	struct motrace_opts opts;
 	int ret = 0;
 	int trace;
 
+	/*
+	 * Detached/attachable mode starts the agent without initializing
+	 * symbol/filter state.  Only allow MO_ATTACH / MO_DETACH until startup.
+	 */
+	if ((mcount_global_flags & MCOUNT_GFL_SETUP) &&
+	    opt != MOTRACE_AGENT_OPT_MO_ATTACH && opt != MOTRACE_AGENT_OPT_MO_DETACH) {
+		pr_dbg3("agent option not supported before attach: %#x\n", opt);
+		return ENOTSUP;
+	}
+
 	switch (opt) {
-	case UFTRACE_AGENT_OPT_TRACE:
+	case MOTRACE_AGENT_OPT_TRACE:
 		trace = *((int *)value);
 		if (mcount_enabled != trace) {
 			mcount_enabled = trace;
@@ -172,7 +182,7 @@ static int agent_apply_option(int opt, void *value, size_t size,
 		}
 		break;
 
-	case UFTRACE_AGENT_OPT_DEPTH:
+	case MOTRACE_AGENT_OPT_DEPTH:
 		opts.depth = *((int *)value);
 		if (opts.depth != mcount_depth) {
 			mcount_depth = opts.depth;
@@ -182,7 +192,7 @@ static int agent_apply_option(int opt, void *value, size_t size,
 			pr_dbg3("dynamic depth unchanged\n");
 		break;
 
-	case UFTRACE_AGENT_OPT_THRESHOLD:
+	case MOTRACE_AGENT_OPT_THRESHOLD:
 		opts.threshold = *((uint64_t *)value);
 		if (opts.threshold != mcount_threshold) {
 			mcount_threshold = opts.threshold;
@@ -192,7 +202,7 @@ static int agent_apply_option(int opt, void *value, size_t size,
 			pr_dbg3("dynamic time threshold unchanged\n");
 		break;
 
-	case UFTRACE_AGENT_OPT_PATTERN:
+	case MOTRACE_AGENT_OPT_PATTERN:
 		opts.patt_type = *((int *)value);
 		if (opts.patt_type != mcount_filter_setting.ptype) {
 			mcount_filter_setting.ptype = opts.patt_type;
@@ -200,23 +210,35 @@ static int agent_apply_option(int opt, void *value, size_t size,
 		}
 		break;
 
-	case UFTRACE_AGENT_OPT_FILTER:
+	case MOTRACE_AGENT_OPT_FILTER:
 		pr_dbg3("apply filter '%s' (size=%d)\n", value, size);
 		agent_setup_filter(value, triggers);
 		break;
 
-	case UFTRACE_AGENT_OPT_CALLER:
+	case MOTRACE_AGENT_OPT_CALLER:
 		pr_dbg3("apply caller filter '%s' (size=%d)\n", value, size);
 		agent_setup_caller_filter(value, triggers);
 		break;
 
-	case UFTRACE_AGENT_OPT_TRIGGER:
+	case MOTRACE_AGENT_OPT_TRIGGER:
 		pr_dbg3("apply trigger '%s' (size=%d)\n", value, size);
 		agent_setup_trigger(value, triggers);
 		break;
 
+	case MOTRACE_AGENT_OPT_MO_ATTACH:
+		pr_dbg3("mo attach (size=%d)\n", size);
+		if (mcount_mo_attach(value, size) < 0)
+			ret = EINVAL;
+		break;
+
+	case MOTRACE_AGENT_OPT_MO_DETACH:
+		pr_dbg3("mo detach\n");
+		if (mcount_mo_detach() < 0)
+			ret = EINVAL;
+		break;
+
 	default:
-		ret = -1;
+		ret = ENOTSUP;
 	}
 
 	return ret;
@@ -226,7 +248,7 @@ static bool triggers_needs_copy(int opt)
 {
 	bool ret;
 #define MATCHING_OPTIONS                                                                           \
-	(UFTRACE_AGENT_OPT_FILTER | UFTRACE_AGENT_OPT_CALLER | UFTRACE_AGENT_OPT_TRIGGER)
+	(MOTRACE_AGENT_OPT_FILTER | MOTRACE_AGENT_OPT_CALLER | MOTRACE_AGENT_OPT_TRIGGER)
 	ret = opt & MATCHING_OPTIONS;
 #undef MATCHING_OPTIONS
 	return ret;
@@ -237,11 +259,11 @@ static void *agent_apply_commands(void *arg)
 {
 	int sfd, cfd; /* socket fd, connection fd */
 	bool close_connection;
-	struct uftrace_msg msg;
+	struct motrace_msg msg;
 	struct sockaddr_un addr;
 	void *value = NULL;
 	size_t size;
-	struct uftrace_triggers_info *triggers_copy = NULL;
+	struct motrace_triggers_info *triggers_copy = NULL;
 
 	/* initialize agent */
 	sfd = agent_init(&addr);
@@ -271,25 +293,28 @@ static void *agent_apply_commands(void *arg)
 			if (agent_message_read_head(cfd, &msg) == -1) {
 				status = EINVAL;
 				pr_dbg3("error reading client message\n");
-				agent_message_send(cfd, UFTRACE_MSG_AGENT_ERR, &status,
+				agent_message_send(cfd, MOTRACE_MSG_AGENT_ERR, &status,
 						   sizeof(status));
 				continue;
 			}
 
 			/* parse message body */
 			switch (msg.type) {
-			case UFTRACE_MSG_AGENT_QUERY:
-				status = MCOUNT_AGENT_CAPABILITIES;
+			case MOTRACE_MSG_AGENT_QUERY:
+				if (mcount_global_flags & MCOUNT_GFL_SETUP)
+					status = MOTRACE_AGENT_OPT_MO_ATTACH | MOTRACE_AGENT_OPT_MO_DETACH;
+				else
+					status = MCOUNT_AGENT_CAPABILITIES;
 				pr_dbg3("send capabilities to client\n");
-				agent_message_send(cfd, UFTRACE_MSG_AGENT_OK, &status,
+				agent_message_send(cfd, MOTRACE_MSG_AGENT_OK, &status,
 						   sizeof(status));
 				break;
 
-			case UFTRACE_MSG_AGENT_SET_OPT:
+			case MOTRACE_MSG_AGENT_SET_OPT:
 				size = agent_read_option(cfd, &opt, &value, msg.len);
 				if (status < 0) {
 					status = EINVAL;
-					agent_message_send(cfd, UFTRACE_MSG_AGENT_ERR, &status,
+					agent_message_send(cfd, MOTRACE_MSG_AGENT_ERR, &status,
 							   sizeof(status));
 					break;
 				}
@@ -298,24 +323,24 @@ static void *agent_apply_commands(void *arg)
 				if (triggers_needs_copy(opt) && !triggers_copy) {
 					triggers_copy = xmalloc(sizeof(*triggers_copy));
 					*triggers_copy =
-						uftrace_deep_copy_triggers(mcount_triggers);
+						motrace_deep_copy_triggers(mcount_triggers);
 				}
 				status = agent_apply_option(opt, value, size, triggers_copy);
 				if (status == 0)
-					agent_message_send(cfd, UFTRACE_MSG_AGENT_OK, NULL, 0);
+					agent_message_send(cfd, MOTRACE_MSG_AGENT_OK, NULL, 0);
 				else
-					agent_message_send(cfd, UFTRACE_MSG_AGENT_ERR, &status,
+					agent_message_send(cfd, MOTRACE_MSG_AGENT_ERR, &status,
 							   sizeof(status));
 				break;
 
-			case UFTRACE_MSG_AGENT_GET_OPT:
+			case MOTRACE_MSG_AGENT_GET_OPT:
 				/* TODO send data */
-				agent_message_send(cfd, UFTRACE_MSG_AGENT_OK, NULL, 0);
+				agent_message_send(cfd, MOTRACE_MSG_AGENT_OK, NULL, 0);
 				break;
 
-			case UFTRACE_MSG_AGENT_CLOSE:
+			case MOTRACE_MSG_AGENT_CLOSE:
 				close_connection = true;
-				agent_message_send(cfd, UFTRACE_MSG_AGENT_OK, NULL, 0);
+				agent_message_send(cfd, MOTRACE_MSG_AGENT_OK, NULL, 0);
 				break;
 
 			default:
@@ -357,7 +382,7 @@ int agent_kill(void)
 	int sfd;
 	int status;
 	struct sockaddr_un addr;
-	struct uftrace_msg ack;
+	struct motrace_msg ack;
 
 	if (!agent_run)
 		return 0;
@@ -372,11 +397,11 @@ int agent_kill(void)
 			goto error;
 	}
 
-	status = agent_message_send(sfd, UFTRACE_MSG_AGENT_CLOSE, NULL, 0);
+	status = agent_message_send(sfd, MOTRACE_MSG_AGENT_CLOSE, NULL, 0);
 	if (status < 0)
 		goto error;
 	status = agent_message_read_response(sfd, &ack);
-	if (status < 0 || ack.type != UFTRACE_MSG_AGENT_OK)
+	if (status < 0 || ack.type != MOTRACE_MSG_AGENT_OK)
 		goto error;
 
 	close(sfd);

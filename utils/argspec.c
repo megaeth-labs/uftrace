@@ -7,13 +7,13 @@
 #define PR_FMT "filter"
 #define PR_DOMAIN DBG_FILTER
 
-#include "uftrace.h"
+#include "motrace.h"
 #include "utils/arch.h"
 #include "utils/argspec.h"
 #include "utils/filter.h"
 #include "utils/utils.h"
 
-static bool is_arm_machine(struct uftrace_filter_setting *setting)
+static bool is_arm_machine(struct motrace_filter_setting *setting)
 {
 	return setting->arch == UFT_CPU_ARM;
 }
@@ -23,7 +23,7 @@ static int check_so_cb(struct dl_phdr_info *info, size_t size, void *data)
 	const char *soname = data;
 	int so_used = 0;
 
-	if (!strncmp(uftrace_basename(info->dlpi_name), soname, strlen(soname)))
+	if (!strncmp(motrace_basename(info->dlpi_name), soname, strlen(soname)))
 		so_used = 1;
 
 	return so_used;
@@ -43,9 +43,9 @@ static int has_shared_object(const char *soname)
 }
 
 /* argument_spec = arg1/i32,arg2/x64,... */
-struct uftrace_arg_spec *parse_argspec(char *str, struct uftrace_filter_setting *setting)
+struct motrace_arg_spec *parse_argspec(char *str, struct motrace_filter_setting *setting)
 {
-	struct uftrace_arg_spec *arg;
+	struct motrace_arg_spec *arg;
 	int fmt = ARG_FMT_AUTO;
 	int size = setting->lp64 ? 8 : 4;
 	int idx;
@@ -255,7 +255,7 @@ err:
 	return NULL;
 }
 
-void free_arg_spec(struct uftrace_arg_spec *arg)
+void free_arg_spec(struct motrace_arg_spec *arg)
 {
 	free(arg->type_name);
 	free(arg);
@@ -265,8 +265,8 @@ void free_arg_spec(struct uftrace_arg_spec *arg)
 TEST_CASE(argspec_parse_struct)
 {
 	char *str;
-	struct uftrace_arg_spec *spec;
-	struct uftrace_filter_setting setting = { .arch = UFT_CPU_X86_64 };
+	struct motrace_arg_spec *spec;
+	struct motrace_filter_setting setting = { .arch = UFT_CPU_X86_64 };
 
 	/* parse_argspec might change the string, copy it */
 	str = strdup("arg3/t16:mystruct%RDI+RSI");

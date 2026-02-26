@@ -1,5 +1,6 @@
 #include <fnmatch.h>
 #include <regex.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/utsname.h>
@@ -9,13 +10,24 @@
 #define PR_DOMAIN DBG_FILTER
 
 #include "libmcount/mcount.h"
-#include "uftrace.h"
+#include "motrace.h"
 #include "utils/dwarf.h"
 #include "utils/filter.h"
 #include "utils/list.h"
 #include "utils/rbtree.h"
 #include "utils/symbol.h"
 #include "utils/utils.h"
+
+static void *get_pointer_data(void *ptr, int num_off, int *ptr_off)
+{
+	int i;
+	void *data = ptr;
+
+	for (i = 0; i < num_off; i++) {
+		data = *(void **)(data + ptr_off[i]);
+	}
+	return data;
+}
 
 static void snprintf_trigger_read(char *buf, size_t len, enum trigger_read_type type)
 {
@@ -36,7 +48,37 @@ static void snprintf_trigger_read(char *buf, size_t len, enum trigger_read_type 
 		snprintf(buf, len, "%s%s", buf[0] ? "|" : "", "pmu-branch");
 }
 
-static void print_trigger(struct uftrace_trigger *tr)
+static void snprintf_trigger_cond(char *buf, size_t len, struct motrace_filter_cond *cond)
+{
+	const char *op_str[] = { "==", "!=", ">", ">=", "<", "<=" };
+
+	if (cond->off == -1) {
+		// Direct value comparison: e.g., "arg1 == 1234"
+		// cond->val is a malloc'd block of size sizeof(long)
+		long val;
+		memcpy(&val, cond->val, sizeof(long)); // Copy the value from cond->val
+		snprintf(buf, len, "arg%d %s %ld", cond->idx, op_str[cond->op], val);
+	}
+	else {
+		// Memory block comparison: e.g., "arg1+4:2 == 0x1234"
+		char hex_str[cond->size * 2 + 3]; // 2 chars per byte + "0x" + null terminator
+		unsigned char *bytes = (unsigned char *)cond->val;
+		int pos = 0;
+
+		// Build hex string: "0x" prefix followed by bytes
+		pos += snprintf(hex_str + pos, sizeof(hex_str) - pos, "0x");
+		for (int i = 0; i < cond->size; i++) {
+			pos += snprintf(hex_str + pos, sizeof(hex_str) - pos, "%02" PRIX8,
+					bytes[i]);
+		}
+
+		// Format the full condition string
+		snprintf(buf, len, "arg%d+%d:%d %s %s", cond->idx, cond->off, cond->size,
+			 op_str[cond->op], hex_str);
+	}
+}
+
+static void print_trigger(struct motrace_trigger *tr)
 {
 	if (tr->flags & TRIGGER_FL_CLEAR)
 		pr_dbg("\ttriggers: clear=%#x\n", tr->clear_flags);
@@ -44,9 +86,17 @@ static void print_trigger(struct uftrace_trigger *tr)
 		pr_dbg("\ttrigger: depth %d\n", tr->depth);
 	if (tr->flags & TRIGGER_FL_FILTER) {
 		if (tr->fmode == FILTER_MODE_IN)
-			pr_dbg("\ttrigger: filter IN\n");
+			pr_dbg("\ttrigger: filter IN");
 		else if (tr->fmode == FILTER_MODE_OUT)
-			pr_dbg("\ttrigger: filter OUT\n");
+			pr_dbg("\ttrigger: filter OUT");
+
+		if (tr->cond.idx) {
+			char buf[64];
+
+			snprintf_trigger_cond(buf, sizeof(buf), &tr->cond);
+			pr_dbg("\tif %s", buf);
+		}
+		pr_dbg("\n");
 	}
 	if (tr->flags & TRIGGER_FL_LOC) {
 		if (tr->lmode == FILTER_MODE_IN)
@@ -68,7 +118,7 @@ static void print_trigger(struct uftrace_trigger *tr)
 		pr_dbg("\ttrigger: finish\n");
 
 	if (tr->flags & TRIGGER_FL_ARGUMENT) {
-		struct uftrace_arg_spec *arg;
+		struct motrace_arg_spec *arg;
 
 		pr_dbg("\ttrigger: argument\n");
 		list_for_each_entry(arg, tr->pargs, list) {
@@ -79,7 +129,7 @@ static void print_trigger(struct uftrace_trigger *tr)
 		}
 	}
 	if (tr->flags & TRIGGER_FL_RETVAL) {
-		struct uftrace_arg_spec *arg;
+		struct motrace_arg_spec *arg;
 
 		pr_dbg("\ttrigger: return value\n");
 		list_for_each_entry(arg, tr->pargs, list) {
@@ -108,19 +158,19 @@ static void print_trigger(struct uftrace_trigger *tr)
 }
 
 /**
- * uftrace_count_filter - count matching filters in @root
+ * motrace_count_filter - count matching filters in @root
  * @root - root of rbtree which has filters
  * @flag - filter flag to match
  */
-int uftrace_count_filter(struct rb_root *root, unsigned long flag)
+int motrace_count_filter(struct rb_root *root, unsigned long flag)
 {
 	struct rb_node *entry;
-	struct uftrace_filter *iter;
+	struct motrace_filter *iter;
 	int count = 0;
 
 	entry = rb_first(root);
 	while (entry) {
-		iter = rb_entry(entry, struct uftrace_filter, node);
+		iter = rb_entry(entry, struct motrace_filter, node);
 
 		if (iter->trigger.flags & flag)
 			count++;
@@ -130,27 +180,27 @@ int uftrace_count_filter(struct rb_root *root, unsigned long flag)
 	return count;
 }
 
-static bool match_ip(struct uftrace_filter *filter, uint64_t addr)
+static bool match_ip(struct motrace_filter *filter, uint64_t addr)
 {
 	return filter->start <= addr && addr < filter->end;
 }
 
 /**
- * uftrace_match_filter - try to match @ip with filters in @root
+ * motrace_match_filter - try to match @ip with filters in @root
  * @addr - instruction address to match
  * @root - root of rbtree which has filters
  * @tr   - trigger data
  */
-struct uftrace_filter *uftrace_match_filter(uint64_t addr, struct rb_root *root,
-					    struct uftrace_trigger *tr)
+struct motrace_filter *motrace_match_filter(uint64_t addr, struct rb_root *root,
+					    struct motrace_trigger *tr)
 {
 	struct rb_node *parent = NULL;
 	struct rb_node **p = &root->rb_node;
-	struct uftrace_filter *iter;
+	struct motrace_filter *iter;
 
 	while (*p) {
 		parent = *p;
-		iter = rb_entry(parent, struct uftrace_filter, node);
+		iter = rb_entry(parent, struct motrace_filter, node);
 
 		if (match_ip(iter, addr)) {
 			*tr = iter->trigger;
@@ -169,10 +219,10 @@ struct uftrace_filter *uftrace_match_filter(uint64_t addr, struct rb_root *root,
 	return NULL;
 }
 
-static void add_arg_spec(struct list_head *arg_list, struct uftrace_arg_spec *arg, bool exact_match)
+static void add_arg_spec(struct list_head *arg_list, struct motrace_arg_spec *arg, bool exact_match)
 {
 	bool found = false;
-	struct uftrace_arg_spec *oarg, *narg;
+	struct motrace_arg_spec *oarg, *narg;
 
 	list_for_each_entry(oarg, arg_list, list) {
 		if (arg->type != oarg->type)
@@ -249,20 +299,24 @@ static void add_arg_spec(struct list_head *arg_list, struct uftrace_arg_spec *ar
  * @tr - trigger flags to apply
  * @exact_match - if symbol is exact or regex match (exact match has precedence)
  */
-void update_trigger(struct uftrace_filter *filter, struct uftrace_trigger *tr, bool exact_match)
+void update_trigger(struct motrace_filter *filter, struct motrace_trigger *tr, bool exact_match)
 {
 	filter->trigger.flags |= tr->flags;
 
 	if (tr->flags & TRIGGER_FL_CLEAR) {
 		filter->trigger.flags &= ~tr->clear_flags;
-		if (tr->clear_flags & TRIGGER_FL_FILTER)
+		if (tr->clear_flags & TRIGGER_FL_FILTER) {
 			tr->fmode = filter->trigger.fmode; /* read from tree before deleting */
+			memset(&filter->trigger.cond, 0, sizeof(tr->cond));
+		}
 	}
 
 	if (tr->flags & TRIGGER_FL_DEPTH)
 		filter->trigger.depth = tr->depth;
-	if (tr->flags & TRIGGER_FL_FILTER)
+	if (tr->flags & TRIGGER_FL_FILTER) {
 		filter->trigger.fmode = tr->fmode;
+		memcpy(&filter->trigger.cond, &tr->cond, sizeof(tr->cond));
+	}
 	if (tr->flags & TRIGGER_FL_LOC)
 		filter->trigger.lmode = tr->lmode;
 
@@ -272,7 +326,7 @@ void update_trigger(struct uftrace_filter *filter, struct uftrace_trigger *tr, b
 		filter->trigger.flags &= ~TRIGGER_FL_TRACE_ON;
 
 	if (tr->flags & (TRIGGER_FL_ARGUMENT | TRIGGER_FL_RETVAL)) {
-		struct uftrace_arg_spec *arg;
+		struct motrace_arg_spec *arg;
 
 		list_for_each_entry(arg, tr->pargs, list)
 			add_arg_spec(&filter->args, arg, exact_match);
@@ -288,6 +342,79 @@ void update_trigger(struct uftrace_filter *filter, struct uftrace_trigger *tr, b
 		filter->trigger.size = tr->size;
 }
 
+bool motrace_eval_cond(struct motrace_filter_cond *cond, void *val)
+{
+	switch (cond->op) {
+	case FILTER_OP_EQ:
+		if (cond->off == -1)
+			return memcmp(val, cond->val, cond->size) == 0;
+		return memcmp(val + cond->off, cond->val, cond->size) == 0;
+	case FILTER_OP_NE:
+		if (cond->off == -1)
+			return memcmp(val, cond->val, cond->size) != 0;
+		return memcmp(val + cond->off, cond->val, cond->size) != 0;
+	case FILTER_OP_GT:
+		if (cond->off == -1) {
+			if (cond->size == 8)
+				return *((int64_t *)val) > *((int64_t *)cond->val);
+			return memcmp(val, cond->val, cond->size) > 0;
+		}
+		return memcmp(val + cond->off, cond->val, cond->size) > 0;
+	case FILTER_OP_GE:
+		if (cond->off == -1) {
+			if (cond->size == 8)
+				return *((int64_t *)val) >= *((int64_t *)cond->val);
+			return memcmp(val, cond->val, cond->size) >= 0;
+		}
+		return memcmp(val + cond->off, cond->val, cond->size) >= 0;
+	case FILTER_OP_LT:
+		if (cond->off == -1) {
+			if (cond->size == 8)
+				return *((int64_t *)val) < *((int64_t *)cond->val);
+			return memcmp(val, cond->val, cond->size) < 0;
+		}
+		return memcmp(val + cond->off, cond->val, cond->size) < 0;
+	case FILTER_OP_LE:
+		if (cond->off == -1) {
+			if (cond->size == 8)
+				return *((int64_t *)val) <= *((int64_t *)cond->val);
+			return memcmp(val, cond->val, cond->size) <= 0;
+		}
+		return memcmp(val + cond->off, cond->val, cond->size) <= 0;
+	case FILTER_OP_BETWEEN: {
+		long v;
+		struct motrace_filter_between_cond *bp = cond->val;
+		void *data = cond->off == -1 ? val :
+					       get_pointer_data(val, cond->num_off, cond->ptr_off) +
+						       cond->off;
+
+		if (cond->size == 1) {
+			uint8_t u8_v;
+			memcpy(&u8_v, data, cond->size);
+			v = (long)u8_v;
+		}
+		else if (cond->size == 2) {
+			uint16_t u16_v;
+			memcpy(&u16_v, data, sizeof(uint16_t));
+			v = (long)u16_v;
+		}
+		else if (cond->size == 4) {
+			uint32_t u32_v;
+			memcpy(&u32_v, data, sizeof(uint32_t));
+			v = (long)u32_v;
+		}
+		else {
+			uint64_t u64_v;
+			memcpy(&u64_v, data, sizeof(uint64_t));
+			v = (long)u64_v;
+		}
+		return v >= bp->l && v <= bp->h;
+	}
+	default:
+		return false;
+	}
+}
+
 /**
  * prune_void_filter - remove filters without trigger flags from the tree
  * @node - filter node to check
@@ -295,7 +422,7 @@ void update_trigger(struct uftrace_filter *filter, struct uftrace_trigger *tr, b
  */
 static void prune_void_filter(struct rb_node *node, struct rb_root *root)
 {
-	struct uftrace_filter *iter = rb_entry(node, struct uftrace_filter, node);
+	struct motrace_filter *iter = rb_entry(node, struct motrace_filter, node);
 	if (!iter->trigger.flags) {
 		rb_erase(node, root);
 		pr_dbg3("prune void filter %s\n", iter->name);
@@ -311,15 +438,15 @@ static void prune_void_filter(struct rb_node *node, struct rb_root *root)
  * @dinfo - debug information
  * @return - status: 1 when update is made, 0 otherwise
  */
-static int update_filter(struct rb_root *root, struct uftrace_filter *filter,
-			 struct uftrace_trigger *tr, struct uftrace_mmap *map, bool exact_match,
-			 struct uftrace_dbg_info *dinfo, struct uftrace_filter_setting *setting)
+static int update_filter(struct rb_root *root, struct motrace_filter *filter,
+			 struct motrace_trigger *tr, struct motrace_mmap *map, bool exact_match,
+			 struct motrace_dbg_info *dinfo, struct motrace_filter_setting *setting)
 {
 	struct rb_node *parent = NULL;
 	struct rb_node **p = &root->rb_node;
-	struct uftrace_filter *iter, *new;
-	struct uftrace_filter *auto_arg = NULL;
-	struct uftrace_filter *auto_ret = NULL;
+	struct motrace_filter *iter, *new;
+	struct motrace_filter *auto_arg = NULL;
+	struct motrace_filter *auto_ret = NULL;
 	unsigned long orig_flags = tr->flags;
 
 	if ((tr->flags & TRIGGER_FL_ARGUMENT) && list_empty(tr->pargs)) {
@@ -349,7 +476,7 @@ static int update_filter(struct rb_root *root, struct uftrace_filter *filter,
 
 	while (*p) {
 		parent = *p;
-		iter = rb_entry(parent, struct uftrace_filter, node);
+		iter = rb_entry(parent, struct motrace_filter, node);
 
 		if (iter->start == filter->start) {
 			unsigned long args_flags = tr->flags;
@@ -400,7 +527,7 @@ static int update_filter(struct rb_root *root, struct uftrace_filter *filter,
 }
 
 struct {
-	enum uftrace_pattern_type type;
+	enum motrace_pattern_type type;
 	const char *name;
 } filter_patterns[] = {
 	{ PATT_SIMPLE, "simple" },
@@ -408,7 +535,7 @@ struct {
 	{ PATT_GLOB, "glob" },
 };
 
-void init_locfilter_pattern(enum uftrace_pattern_type type, struct uftrace_pattern *p, char *str)
+void init_locfilter_pattern(enum motrace_pattern_type type, struct motrace_pattern *p, char *str)
 {
 	char *converted;
 
@@ -445,7 +572,7 @@ void init_locfilter_pattern(enum uftrace_pattern_type type, struct uftrace_patte
 	}
 }
 
-void init_filter_pattern(enum uftrace_pattern_type type, struct uftrace_pattern *p, char *str)
+void init_filter_pattern(enum motrace_pattern_type type, struct motrace_pattern *p, char *str)
 {
 	if (strpbrk(str, REGEX_CHARS) == NULL)
 		type = PATT_SIMPLE;
@@ -466,7 +593,7 @@ void init_filter_pattern(enum uftrace_pattern_type type, struct uftrace_pattern 
 	}
 }
 
-bool match_filter_pattern(struct uftrace_pattern *p, char *name)
+bool match_filter_pattern(struct motrace_pattern *p, char *name)
 {
 	switch (p->type) {
 	case PATT_SIMPLE:
@@ -480,7 +607,7 @@ bool match_filter_pattern(struct uftrace_pattern *p, char *name)
 	}
 }
 
-bool match_location_filter(struct uftrace_pattern *p, struct uftrace_dbg_info *dinfo,
+bool match_location_filter(struct motrace_pattern *p, struct motrace_dbg_info *dinfo,
 			   size_t loc_idx)
 {
 	char *loc;
@@ -493,7 +620,7 @@ bool match_location_filter(struct uftrace_pattern *p, struct uftrace_dbg_info *d
 	return match_filter_pattern(p, loc);
 }
 
-void free_filter_pattern(struct uftrace_pattern *p)
+void free_filter_pattern(struct motrace_pattern *p)
 {
 	free(p->patt);
 	p->patt = NULL;
@@ -504,7 +631,7 @@ void free_filter_pattern(struct uftrace_pattern *p)
 	p->type = PATT_NONE;
 }
 
-enum uftrace_pattern_type parse_filter_pattern(const char *str)
+enum motrace_pattern_type parse_filter_pattern(const char *str)
 {
 	size_t i;
 
@@ -516,7 +643,7 @@ enum uftrace_pattern_type parse_filter_pattern(const char *str)
 	return PATT_NONE;
 }
 
-const char *get_filter_pattern(enum uftrace_pattern_type ptype)
+const char *get_filter_pattern(enum motrace_pattern_type ptype)
 {
 	size_t i;
 
@@ -529,10 +656,10 @@ const char *get_filter_pattern(enum uftrace_pattern_type ptype)
 }
 
 /* argument_spec = arg1/i32,arg2/x64%reg,arg3%stack+1,... */
-static int parse_argument_spec(char *str, struct uftrace_trigger *tr,
-			       struct uftrace_filter_setting *setting)
+static int parse_argument_spec(char *str, struct motrace_trigger *tr,
+			       struct motrace_filter_setting *setting)
 {
-	struct uftrace_arg_spec *arg;
+	struct motrace_arg_spec *arg;
 
 	if (!isdigit(str[3])) {
 		pr_use("skipping invalid argument: %s\n", str);
@@ -549,10 +676,10 @@ static int parse_argument_spec(char *str, struct uftrace_trigger *tr,
 	return 0;
 }
 /* argument_spec = retval/i32 or retval/x64 ... */
-static int parse_retval_spec(char *str, struct uftrace_trigger *tr,
-			     struct uftrace_filter_setting *setting)
+static int parse_retval_spec(char *str, struct motrace_trigger *tr,
+			     struct motrace_filter_setting *setting)
 {
-	struct uftrace_arg_spec *arg;
+	struct motrace_arg_spec *arg;
 
 	arg = parse_argspec(str, setting);
 	if (arg == NULL)
@@ -565,10 +692,10 @@ static int parse_retval_spec(char *str, struct uftrace_trigger *tr,
 }
 
 /* argument_spec = fparg1/32,fparg2/64%stack+1,... */
-static int parse_float_argument_spec(char *str, struct uftrace_trigger *tr,
-				     struct uftrace_filter_setting *setting)
+static int parse_float_argument_spec(char *str, struct motrace_trigger *tr,
+				     struct motrace_filter_setting *setting)
 {
-	struct uftrace_arg_spec *arg;
+	struct motrace_arg_spec *arg;
 
 	if (!isdigit(str[5])) {
 		pr_use("skipping invalid argument: %s\n", str);
@@ -585,8 +712,8 @@ static int parse_float_argument_spec(char *str, struct uftrace_trigger *tr,
 	return 0;
 }
 
-static int parse_depth_action(char *action, struct uftrace_trigger *tr,
-			      struct uftrace_filter_setting *setting)
+static int parse_depth_action(char *action, struct motrace_trigger *tr,
+			      struct motrace_filter_setting *setting)
 {
 	tr->flags |= TRIGGER_FL_DEPTH;
 	tr->depth = strtoul(action + 6, NULL, 10);
@@ -598,24 +725,24 @@ static int parse_depth_action(char *action, struct uftrace_trigger *tr,
 	return 0;
 }
 
-static int parse_time_action(char *action, struct uftrace_trigger *tr,
-			     struct uftrace_filter_setting *setting)
+static int parse_time_action(char *action, struct motrace_trigger *tr,
+			     struct motrace_filter_setting *setting)
 {
 	tr->flags |= TRIGGER_FL_TIME_FILTER;
 	tr->time = parse_time(action + 5, 3);
 	return 0;
 }
 
-static int parse_size_action(char *action, struct uftrace_trigger *tr,
-			     struct uftrace_filter_setting *setting)
+static int parse_size_action(char *action, struct motrace_trigger *tr,
+			     struct motrace_filter_setting *setting)
 {
 	tr->flags |= TRIGGER_FL_SIZE_FILTER;
 	tr->size = strtoul(action + 5, NULL, 10);
 	return 0;
 }
 
-static int parse_read_action(char *action, struct uftrace_trigger *tr,
-			     struct uftrace_filter_setting *setting)
+static int parse_read_action(char *action, struct motrace_trigger *tr,
+			     struct motrace_filter_setting *setting)
 {
 	const char *target = action + 5;
 
@@ -637,8 +764,8 @@ static int parse_read_action(char *action, struct uftrace_trigger *tr,
 	return 0;
 }
 
-static int parse_color_action(char *action, struct uftrace_trigger *tr,
-			      struct uftrace_filter_setting *setting)
+static int parse_color_action(char *action, struct motrace_trigger *tr,
+			      struct motrace_filter_setting *setting)
 {
 	const char *color = action + 6;
 
@@ -667,8 +794,8 @@ static int parse_color_action(char *action, struct uftrace_trigger *tr,
 	return 0;
 }
 
-static int parse_trace_action(char *action, struct uftrace_trigger *tr,
-			      struct uftrace_filter_setting *setting)
+static int parse_trace_action(char *action, struct motrace_trigger *tr,
+			      struct motrace_filter_setting *setting)
 {
 	action += 5;
 	if (*action == '_' || *action == '-')
@@ -686,66 +813,231 @@ static int parse_trace_action(char *action, struct uftrace_trigger *tr,
 	return 0;
 }
 
-static int parse_backtrace_action(char *action, struct uftrace_trigger *tr,
-				  struct uftrace_filter_setting *setting)
+static int parse_backtrace_action(char *action, struct motrace_trigger *tr,
+				  struct motrace_filter_setting *setting)
 {
 	tr->flags |= TRIGGER_FL_BACKTRACE;
 	return 0;
 }
 
-static int parse_recover_action(char *action, struct uftrace_trigger *tr,
-				struct uftrace_filter_setting *setting)
+static int parse_recover_action(char *action, struct motrace_trigger *tr,
+				struct motrace_filter_setting *setting)
 {
 	tr->flags |= TRIGGER_FL_RECOVER;
 	return 0;
 }
 
-static int parse_finish_action(char *action, struct uftrace_trigger *tr,
-			       struct uftrace_filter_setting *setting)
+static int parse_finish_action(char *action, struct motrace_trigger *tr,
+			       struct motrace_filter_setting *setting)
 {
 	tr->flags |= TRIGGER_FL_FINISH;
 	return 0;
 }
 
-static int parse_filter_action(char *action, struct uftrace_trigger *tr,
-			       struct uftrace_filter_setting *setting)
+static int parse_filter_action(char *action, struct motrace_trigger *tr,
+			       struct motrace_filter_setting *setting)
 {
 	tr->flags |= TRIGGER_FL_FILTER;
 	tr->fmode = FILTER_MODE_IN;
 	return 0;
 }
 
-static int parse_notrace_action(char *action, struct uftrace_trigger *tr,
-				struct uftrace_filter_setting *setting)
+static int parse_notrace_action(char *action, struct motrace_trigger *tr,
+				struct motrace_filter_setting *setting)
 {
 	tr->flags |= TRIGGER_FL_FILTER;
 	tr->fmode = FILTER_MODE_OUT;
 	return 0;
 }
 
-static int parse_auto_args_action(char *action, struct uftrace_trigger *tr,
-				  struct uftrace_filter_setting *setting)
+static int parse_auto_args_action(char *action, struct motrace_trigger *tr,
+				  struct motrace_filter_setting *setting)
 {
 	tr->flags |= TRIGGER_FL_ARGUMENT | TRIGGER_FL_RETVAL;
 	return 0;
 }
 
-static int parse_caller_action(char *action, struct uftrace_trigger *tr,
-			       struct uftrace_filter_setting *setting)
+static int parse_caller_action(char *action, struct motrace_trigger *tr,
+			       struct motrace_filter_setting *setting)
 {
 	tr->flags |= TRIGGER_FL_CALLER;
 	return 0;
 }
 
-static int parse_hide_action(char *action, struct uftrace_trigger *tr,
-			     struct uftrace_filter_setting *setting)
+static int parse_hide_action(char *action, struct motrace_trigger *tr,
+			     struct motrace_filter_setting *setting)
 {
 	tr->flags |= TRIGGER_FL_HIDE;
 	return 0;
 }
 
-static int parse_clear_action(char *action, struct uftrace_trigger *tr,
-			      struct uftrace_filter_setting *setting)
+/*
+ * if:arg1==1234, single condition
+ * if:args1+0:2==0x1234, memory condition
+ * if:args1+0:2--1:2, range condition
+ * if:arg1+8+16+0:2--1:2, multi-level pointer offset with range
+ */
+static int parse_cond_action(char *action, struct motrace_trigger *tr,
+			     struct motrace_filter_setting *setting)
+{
+	const char *op_str[] = { "==", "!=", ">", ">=", "<", "<=", "--" };
+	const int size_list[] = { 0, 1, 1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1,
+				  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 };
+	char *expr = action + 3;
+	char *pos;
+	struct motrace_filter_cond cond = {
+		.idx = 0,
+		.off = -1, /* default direct value */
+		.size = 0,
+		.op = 0,
+		.num_off = 0,
+		.ptr_off = NULL,
+		.val = NULL,
+	};
+	int op = -1;
+	void *val_buf = NULL;
+
+	if (strncmp(expr, "arg", 3)) {
+		pr_use("ignoring invalid arg: %s\n", expr);
+		return -1;
+	}
+
+	cond.idx = strtol(expr + 3, &pos, 0);
+	if (cond.idx < 1 || cond.idx > 6) { /* don't support retval */
+		pr_use("only support up to 6 argument for now\n");
+		goto err;
+	}
+
+	// read the [+offset] part
+	while (*pos == '+') {
+		char *tmp;
+
+		int offset = strtol(pos + 1, &tmp, 0);
+		if (tmp == pos + 1 || offset < 0) {
+			pr_use("ignoring invalid offset: %s\n", pos + 1);
+			goto err;
+		}
+		pos = tmp;
+		if ((cond.ptr_off = realloc(cond.ptr_off, (cond.num_off + 1) * sizeof(int))) ==
+		    NULL) {
+			pr_err("realloc failed\n");
+			goto err;
+		}
+		cond.ptr_off[cond.num_off++] = offset;
+		if (*pos == ':')
+			break;
+	}
+
+	if (cond.num_off > 0) {
+		cond.num_off--;
+		cond.off = cond.ptr_off[cond.num_off];
+	}
+
+	if (*pos == ':') {
+		char *tmp;
+
+		cond.size = strtol(pos + 1, &tmp, 0);
+		if (tmp == pos + 1 || cond.size < 0) {
+			pr_use("ignoring invalid size: %s\n", pos + 1);
+			goto err;
+		}
+		pos = tmp;
+		if (cond.size >= (int)sizeof(size_list) || size_list[cond.size] == 0) {
+			pr_use("ignoring invalid size: %d\n", cond.size);
+			goto err;
+		}
+	}
+	else {
+		cond.size = sizeof(long);
+	}
+
+	/* reverse order match to find "<=" before "<" */
+	for (size_t k = ARRAY_SIZE(op_str) - 1; k < ARRAY_SIZE(op_str); k--) {
+		if (strncmp(pos, op_str[k], strlen(op_str[k])))
+			continue;
+
+		op = k;
+		pos += strlen(op_str[k]);
+		break;
+	}
+	if (op == -1) {
+		pr_use("ignoring invalid op: %.3s\n", pos);
+		goto err;
+	}
+
+	val_buf = malloc(cond.size);
+	if (val_buf == NULL) {
+		pr_err("malloc failed\n");
+		goto err;
+	}
+	if (op == FILTER_OP_BETWEEN) {
+		char *tmp;
+		long l, h;
+		struct motrace_filter_between_cond *bp;
+
+		l = strtol(pos, &tmp, 0);
+		if (tmp == pos || l < 0) {
+			pr_use("ignoring invalid range low value: %s\n", pos);
+			goto err;
+		}
+		pos = tmp;
+		if (*pos != ':') {
+			pr_use("ignoring invalid range value: %s\n", pos + 1);
+			goto err;
+		}
+		h = strtol(pos + 1, &tmp, 0);
+		if (tmp == pos + 1 || h < 0) {
+			pr_use("ignoring invalid range high value: %s\n", pos + 1);
+			goto err;
+		}
+		pos = tmp;
+		val_buf = realloc(val_buf, sizeof(struct motrace_filter_between_cond));
+		if (val_buf == NULL) {
+			pr_err("realloc failed\n");
+			goto err;
+		}
+		bp = val_buf;
+		bp->l = l;
+		bp->h = h;
+	}
+	else if (cond.off >= 0) {
+		/* skip 0x prefix */
+		if (strncmp(pos, "0x", 2) == 0) {
+			pos += 2;
+		}
+		if (strlen(pos) != (size_t)cond.size * 2) {
+			pr_use("ignoring invalid value: %s\n", pos);
+			goto err;
+		}
+		for (int i = 0; i < cond.size; i++) {
+			sscanf(pos + i * 2, "%2hhx", &((unsigned char *)val_buf)[i]);
+		}
+	}
+	else {
+		long val = strtol(pos, NULL, 0);
+		memcpy(val_buf, &val, cond.size);
+	}
+
+	/* success: publish */
+	free(tr->cond.ptr_off);
+	free(tr->cond.val);
+
+	cond.op = op;
+	cond.val = val_buf;
+	val_buf = NULL;
+
+	tr->cond = cond;
+
+	return 0;
+
+err:
+	free(cond.ptr_off);
+	free(val_buf);
+	return -1;
+}
+
+static int parse_clear_action(char *action, struct motrace_trigger *tr,
+			      struct motrace_filter_setting *setting)
 {
 	struct strv acts = STRV_INIT;
 	char *pos = NULL;
@@ -804,8 +1096,8 @@ static int parse_clear_action(char *action, struct uftrace_trigger *tr,
 
 struct trigger_action_parser {
 	const char *name;
-	int (*parse)(char *action, struct uftrace_trigger *tr,
-		     struct uftrace_filter_setting *setting);
+	int (*parse)(char *action, struct motrace_trigger *tr,
+		     struct motrace_filter_setting *setting);
 	enum trigger_flag compat_flags; /* flags the action is restricted to */
 };
 
@@ -895,10 +1187,15 @@ static const struct trigger_action_parser actions[] = {
 		parse_clear_action,
 		TRIGGER_FL_FILTER | TRIGGER_FL_CALLER,
 	},
+	{
+		"if:",
+		parse_cond_action,
+		TRIGGER_FL_FILTER,
+	},
 };
 
-int setup_trigger_action(char *str, struct uftrace_trigger *tr, char **module,
-			 unsigned long orig_flags, struct uftrace_filter_setting *setting)
+int setup_trigger_action(char *str, struct motrace_trigger *tr, char **module,
+			 unsigned long orig_flags, struct motrace_filter_setting *setting)
 {
 	char *pos = strchr(str, '@');
 	struct strv acts = STRV_INIT;
@@ -966,14 +1263,14 @@ out:
  * @tr - trigger data and flags to apply
  * @return - status: count of updated filters
  */
-static int update_trigger_entry(struct rb_root *root, struct uftrace_pattern *patt,
-				struct uftrace_trigger *tr, struct uftrace_mmap *map,
-				struct uftrace_filter_setting *setting)
+static int update_trigger_entry(struct rb_root *root, struct motrace_pattern *patt,
+				struct motrace_trigger *tr, struct motrace_mmap *map,
+				struct motrace_filter_setting *setting)
 {
-	struct uftrace_filter filter;
-	struct uftrace_symtab *symtab = &map->mod->symtab;
-	struct uftrace_dbg_info *dinfo = &map->mod->dinfo;
-	struct uftrace_symbol *sym;
+	struct motrace_filter filter;
+	struct motrace_symtab *symtab = &map->mod->symtab;
+	struct motrace_dbg_info *dinfo = &map->mod->dinfo;
+	struct motrace_symbol *sym;
 	size_t i;
 	int ret = 0;
 
@@ -1011,9 +1308,9 @@ static int update_trigger_entry(struct rb_root *root, struct uftrace_pattern *pa
  * @flags      - trigger flags to apply
  * @setting    - filter settings
  */
-static void setup_trigger(char *filter_str, struct uftrace_sym_info *sinfo,
-			  struct uftrace_triggers_info *triggers, unsigned long flags,
-			  struct uftrace_filter_setting *setting)
+static void setup_trigger(char *filter_str, struct motrace_sym_info *sinfo,
+			  struct motrace_triggers_info *triggers, unsigned long flags,
+			  struct motrace_filter_setting *setting)
 {
 	struct strv filters = STRV_INIT;
 	char *name;
@@ -1026,15 +1323,15 @@ static void setup_trigger(char *filter_str, struct uftrace_sym_info *sinfo,
 
 	strv_for_each(&filters, name, j) {
 		LIST_HEAD(args);
-		struct uftrace_trigger tr = {
+		struct motrace_trigger tr = {
 			.flags = flags,
 			.pargs = &args,
 		};
 		int ret = 0;
 		char *module = NULL;
-		struct uftrace_arg_spec *arg;
-		struct uftrace_mmap *map;
-		struct uftrace_pattern patt = {
+		struct motrace_arg_spec *arg;
+		struct motrace_mmap *map;
+		struct motrace_pattern patt = {
 			.type = PATT_NONE,
 		};
 
@@ -1080,7 +1377,7 @@ static void setup_trigger(char *filter_str, struct uftrace_sym_info *sinfo,
 				setting->plt_only = false;
 			}
 			else if (has_kernel_opt(module)) {
-				struct uftrace_mmap kernel_map = {
+				struct motrace_mmap kernel_map = {
 					.mod = get_kernel_module(),
 				};
 
@@ -1144,45 +1441,45 @@ next:
 }
 
 /**
- * uftrace_setup_filter - construct rbtree of filters
+ * motrace_setup_filter - construct rbtree of filters
  * @filter_str - CSV of filter string
  * @sinfo      - symbol information to find symbol address
  * @root       - root of filters rbtree
  * @count      - opt-in filter count
  * @setting    - filter settings
  */
-void uftrace_setup_filter(char *filter_str, struct uftrace_sym_info *sinfo,
-			  struct uftrace_triggers_info *triggers,
-			  struct uftrace_filter_setting *setting)
+void motrace_setup_filter(char *filter_str, struct motrace_sym_info *sinfo,
+			  struct motrace_triggers_info *triggers,
+			  struct motrace_filter_setting *setting)
 {
 	setup_trigger(filter_str, sinfo, triggers, TRIGGER_FL_FILTER, setting);
 }
 
 /**
- * uftrace_setup_trigger - construct rbtree of triggers
+ * motrace_setup_trigger - construct rbtree of triggers
  * @trigger_str - CSV of trigger string (FUNC @ act)
  * @sinfo       - symbol information to find symbol address
  * @root        - root of resulting rbtree
  * @count       - registered opt-in filter count
  * @setting     - filter settings
  */
-void uftrace_setup_trigger(char *trigger_str, struct uftrace_sym_info *sinfo,
-			   struct uftrace_triggers_info *triggers,
-			   struct uftrace_filter_setting *setting)
+void motrace_setup_trigger(char *trigger_str, struct motrace_sym_info *sinfo,
+			   struct motrace_triggers_info *triggers,
+			   struct motrace_filter_setting *setting)
 {
 	setup_trigger(trigger_str, sinfo, triggers, 0, setting);
 }
 
 /**
- * uftrace_setup_argument - construct rbtree of argument
+ * motrace_setup_argument - construct rbtree of argument
  * @args_str   - CSV of argument string (FUNC @ arg)
  * @sinfo      - symbol information to find symbol address
  * @root       - root of resulting rbtree
  * @setting    - filter settings
  */
-void uftrace_setup_argument(char *args_str, struct uftrace_sym_info *sinfo,
-			    struct uftrace_triggers_info *triggers,
-			    struct uftrace_filter_setting *setting)
+void motrace_setup_argument(char *args_str, struct motrace_sym_info *sinfo,
+			    struct motrace_triggers_info *triggers,
+			    struct motrace_filter_setting *setting)
 {
 	unsigned long flags = TRIGGER_FL_ARGUMENT;
 
@@ -1193,15 +1490,15 @@ void uftrace_setup_argument(char *args_str, struct uftrace_sym_info *sinfo,
 }
 
 /**
- * uftrace_setup_retval - construct rbtree of retval
+ * motrace_setup_retval - construct rbtree of retval
  * @retval_str - CSV of return value string (FUNC @ arg)
  * @sinfo      - symbol information to find symbol address
  * @root       - root of resulting rbtree
  * @setting    - filter settings
  */
-void uftrace_setup_retval(char *retval_str, struct uftrace_sym_info *sinfo,
-			  struct uftrace_triggers_info *triggers,
-			  struct uftrace_filter_setting *setting)
+void motrace_setup_retval(char *retval_str, struct motrace_sym_info *sinfo,
+			  struct motrace_triggers_info *triggers,
+			  struct motrace_filter_setting *setting)
 {
 	unsigned long flags = TRIGGER_FL_RETVAL;
 
@@ -1212,45 +1509,45 @@ void uftrace_setup_retval(char *retval_str, struct uftrace_sym_info *sinfo,
 }
 
 /**
- * uftrace_setup_caller_filter - add caller filters to rbtree
+ * motrace_setup_caller_filter - add caller filters to rbtree
  * @filter_str - CSV of filter string
  * @sinfo      - symbol information to find symbol address
  * @root       - root of resulting rbtree
  * @count      - counter for registered caller filters
  * @setting    - filter settings
  */
-void uftrace_setup_caller_filter(char *filter_str, struct uftrace_sym_info *sinfo,
-				 struct uftrace_triggers_info *triggers,
-				 struct uftrace_filter_setting *setting)
+void motrace_setup_caller_filter(char *filter_str, struct motrace_sym_info *sinfo,
+				 struct motrace_triggers_info *triggers,
+				 struct motrace_filter_setting *setting)
 {
 	setup_trigger(filter_str, sinfo, triggers, TRIGGER_FL_CALLER, setting);
 }
 
 /**
- * uftrace_setup_hide_filter - add hide filters to rbtree
+ * motrace_setup_hide_filter - add hide filters to rbtree
  * @filter_str - CSV of filter string
  * @sinfo      - symbol information to find symbol address
  * @root       - root of resulting rbtree
  * @setting    - filter settings
  */
-void uftrace_setup_hide_filter(char *filter_str, struct uftrace_sym_info *sinfo,
-			       struct uftrace_triggers_info *triggers,
-			       struct uftrace_filter_setting *setting)
+void motrace_setup_hide_filter(char *filter_str, struct motrace_sym_info *sinfo,
+			       struct motrace_triggers_info *triggers,
+			       struct motrace_filter_setting *setting)
 {
 	setup_trigger(filter_str, sinfo, triggers, TRIGGER_FL_HIDE, setting);
 }
 
 /**
- * uftrace_setup_loc_filter - add source location filters to rbtree
+ * motrace_setup_loc_filter - add source location filters to rbtree
  * @filter_str - CSV of filter string
  * @sinfo      - symbol information to find symbol address
  * @root       - root of resulting rbtree
  * @count      - opt-in loc filter count
  * @setting    - filter settings
  */
-void uftrace_setup_loc_filter(char *filter_str, struct uftrace_sym_info *sinfo,
-			      struct uftrace_triggers_info *triggers,
-			      struct uftrace_filter_setting *setting)
+void motrace_setup_loc_filter(char *filter_str, struct motrace_sym_info *sinfo,
+			      struct motrace_triggers_info *triggers,
+			      struct motrace_filter_setting *setting)
 {
 	setup_trigger(filter_str, sinfo, triggers, TRIGGER_FL_LOC, setting);
 }
@@ -1260,10 +1557,10 @@ void uftrace_setup_loc_filter(char *filter_str, struct uftrace_sym_info *sinfo,
  * @old    - structure to copy
  * @return - allocated deep copy of @old
  */
-static struct uftrace_filter *deep_copy_filter(struct uftrace_filter *old)
+static struct motrace_filter *deep_copy_filter(struct motrace_filter *old)
 {
-	struct uftrace_filter *new;
-	struct uftrace_arg_spec *arg, *arg_copy;
+	struct motrace_filter *new;
+	struct motrace_arg_spec *arg, *arg_copy;
 
 	new = xmalloc(sizeof(*new));
 
@@ -1288,20 +1585,20 @@ static struct uftrace_filter *deep_copy_filter(struct uftrace_filter *old)
 
 /**
  * deep_copy_triggers - recursively perform a deep copy of a rbtree with
- * 'struct uftrace_filter' nodes
+ * 'struct motrace_filter' nodes
  * @dest - pointer to the address of the copy (modified in place)
  * @src  - original rbtree
  */
 static void deep_copy_triggers(struct rb_node **dest, struct rb_node *src)
 {
-	struct uftrace_filter *old, *new;
+	struct motrace_filter *old, *new;
 
 	if (!src) {
 		*dest = NULL;
 		return;
 	}
 
-	old = rb_entry(src, struct uftrace_filter, node);
+	old = rb_entry(src, struct motrace_filter, node);
 	new = deep_copy_filter(old);
 	*dest = &new->node;
 
@@ -1322,27 +1619,27 @@ static void deep_copy_triggers(struct rb_node **dest, struct rb_node *src)
  * @src    - root of the rbtree to copy
  * @return - root of the deep copy
  */
-struct uftrace_triggers_info uftrace_deep_copy_triggers(struct uftrace_triggers_info *src)
+struct motrace_triggers_info motrace_deep_copy_triggers(struct motrace_triggers_info *src)
 {
-	struct uftrace_triggers_info new = *src;
+	struct motrace_triggers_info new = *src;
 	new.root = RB_ROOT;
 	deep_copy_triggers(&new.root.rb_node, src->root.rb_node);
 	return new;
 }
 
 /**
- * uftrace_cleanup_filter - delete filters in rbtree
+ * motrace_cleanup_filter - delete filters in rbtree
  * @root - root of the filter rbtree
  */
-void uftrace_cleanup_filter(struct rb_root *root)
+void motrace_cleanup_filter(struct rb_root *root)
 {
 	struct rb_node *node;
-	struct uftrace_filter *filter;
-	struct uftrace_arg_spec *arg, *tmp;
+	struct motrace_filter *filter;
+	struct motrace_arg_spec *arg, *tmp;
 
 	while (!RB_EMPTY_ROOT(root)) {
 		node = rb_first(root);
-		filter = rb_entry(node, struct uftrace_filter, node);
+		filter = rb_entry(node, struct motrace_filter, node);
 
 		rb_erase(node, root);
 
@@ -1355,29 +1652,29 @@ void uftrace_cleanup_filter(struct rb_root *root)
 }
 
 /**
- * uftrace_cleanup_triggers - delete filters and reset counters
+ * motrace_cleanup_triggers - delete filters and reset counters
  * @triggers - triggers info
  */
-void uftrace_cleanup_triggers(struct uftrace_triggers_info *triggers)
+void motrace_cleanup_triggers(struct motrace_triggers_info *triggers)
 {
-	uftrace_cleanup_filter(&triggers->root);
+	motrace_cleanup_filter(&triggers->root);
 	triggers->filter_count = 0;
 	triggers->caller_count = 0;
 	triggers->loc_count = 0;
 }
 
 /**
- * uftrace_print_filter - print all filters in rbtree
+ * motrace_print_filter - print all filters in rbtree
  * @root - root of the filter rbtree
  */
-void uftrace_print_filter(struct rb_root *root)
+void motrace_print_filter(struct rb_root *root)
 {
 	struct rb_node *node;
-	struct uftrace_filter *filter;
+	struct motrace_filter *filter;
 
 	node = rb_first(root);
 	while (node) {
-		filter = rb_entry(node, struct uftrace_filter, node);
+		filter = rb_entry(node, struct motrace_filter, node);
 		pr_dbg("%lx-%lx: %s\n", filter->start, filter->end, filter->name);
 		print_trigger(&filter->trigger);
 
@@ -1385,7 +1682,7 @@ void uftrace_print_filter(struct rb_root *root)
 	}
 }
 
-char *uftrace_clear_kernel(char *filter_str)
+char *motrace_clear_kernel(char *filter_str)
 {
 	struct strv filters = STRV_INIT;
 	char *pos, *ret = NULL;
@@ -1411,9 +1708,9 @@ char *uftrace_clear_kernel(char *filter_str)
 
 #ifdef UNIT_TEST
 
-static void filter_test_load_symtabs(struct uftrace_sym_info *sinfo)
+static void filter_test_load_symtabs(struct motrace_sym_info *sinfo)
 {
-	static struct uftrace_symbol syms[] = {
+	static struct motrace_symbol syms[] = {
 		{ 0x1000, 0x1000, ST_GLOBAL_FUNC, "foo::foo" },
 		{ 0x2000, 0x1000, ST_GLOBAL_FUNC, "foo::bar" },
 		{ 0x3000, 0x1000, ST_GLOBAL_FUNC, "foo::baz1" },
@@ -1423,7 +1720,7 @@ static void filter_test_load_symtabs(struct uftrace_sym_info *sinfo)
 		{ 0x21000, 0x1000, ST_PLT_FUNC, "malloc" },
 		{ 0x22000, 0x1000, ST_PLT_FUNC, "free" },
 	};
-	static struct uftrace_module mod = {
+	static struct motrace_module mod = {
 		.symtab = {
 			.sym    = syms,
 			.nr_sym = ARRAY_SIZE(syms),
@@ -1432,7 +1729,7 @@ static void filter_test_load_symtabs(struct uftrace_sym_info *sinfo)
 			.loaded = true,
 		}
 	};
-	static struct uftrace_mmap map = {
+	static struct motrace_mmap map = {
 		.mod = &mod,
 		.start = 0x0,
 		.end = 0x24000,
@@ -1453,48 +1750,48 @@ enum filter_mode get_filter_mode(int count)
 
 TEST_CASE(filter_setup_simple)
 {
-	struct uftrace_sym_info sinfo = {
+	struct motrace_sym_info sinfo = {
 		.loaded = false,
 	};
-	struct uftrace_triggers_info triggers = {
+	struct motrace_triggers_info triggers = {
 		.root = RB_ROOT,
 	};
 	struct rb_node *node;
-	struct uftrace_filter *filter;
-	struct uftrace_filter_setting setting = {
+	struct motrace_filter *filter;
+	struct motrace_filter_setting setting = {
 		.ptype = PATT_SIMPLE,
 	};
 
 	filter_test_load_symtabs(&sinfo);
 
 	pr_dbg("checking simple match\n");
-	uftrace_setup_filter("foo::bar", &sinfo, &triggers, &setting);
+	motrace_setup_filter("foo::bar", &sinfo, &triggers, &setting);
 	TEST_EQ(RB_EMPTY_ROOT(&triggers.root), false);
 
 	node = rb_first(&triggers.root);
-	filter = rb_entry(node, struct uftrace_filter, node);
+	filter = rb_entry(node, struct motrace_filter, node);
 	TEST_STREQ(filter->name, "foo::bar");
 	TEST_EQ(filter->start, 0x2000UL);
 	TEST_EQ(filter->end, 0x2000UL + 0x1000UL);
 
-	uftrace_cleanup_filter(&triggers.root);
+	motrace_cleanup_filter(&triggers.root);
 	TEST_EQ(RB_EMPTY_ROOT(&triggers.root), true);
 
 	pr_dbg("checking destructor match\n");
-	uftrace_setup_filter("foo::~foo", &sinfo, &triggers, &setting);
+	motrace_setup_filter("foo::~foo", &sinfo, &triggers, &setting);
 	TEST_EQ(RB_EMPTY_ROOT(&triggers.root), false);
 
 	node = rb_first(&triggers.root);
-	filter = rb_entry(node, struct uftrace_filter, node);
+	filter = rb_entry(node, struct motrace_filter, node);
 	TEST_STREQ(filter->name, "foo::~foo");
 	TEST_EQ(filter->start, 0x6000UL);
 	TEST_EQ(filter->end, 0x6000UL + 0x1000UL);
 
-	uftrace_cleanup_triggers(&triggers);
+	motrace_cleanup_triggers(&triggers);
 	TEST_EQ(RB_EMPTY_ROOT(&triggers.root), true);
 
 	pr_dbg("checking unknown symbol\n");
-	uftrace_setup_filter("invalid_name", &sinfo, &triggers, &setting);
+	motrace_setup_filter("invalid_name", &sinfo, &triggers, &setting);
 	TEST_EQ(RB_EMPTY_ROOT(&triggers.root), true);
 
 	return TEST_OK;
@@ -1502,50 +1799,50 @@ TEST_CASE(filter_setup_simple)
 
 TEST_CASE(filter_setup_regex)
 {
-	struct uftrace_sym_info sinfo = {
+	struct motrace_sym_info sinfo = {
 		.loaded = false,
 	};
-	struct uftrace_triggers_info triggers = {
+	struct motrace_triggers_info triggers = {
 		.root = RB_ROOT,
 	};
 	struct rb_node *node;
-	struct uftrace_filter *filter;
-	struct uftrace_filter_setting setting = {
+	struct motrace_filter *filter;
+	struct motrace_filter_setting setting = {
 		.ptype = PATT_REGEX,
 	};
 
 	filter_test_load_symtabs(&sinfo);
 
 	pr_dbg("try to match with regex pattern: ^foo::b\n");
-	uftrace_setup_filter("^foo::b", &sinfo, &triggers, &setting);
+	motrace_setup_filter("^foo::b", &sinfo, &triggers, &setting);
 	TEST_EQ(RB_EMPTY_ROOT(&triggers.root), false);
 
 	node = rb_first(&triggers.root);
-	filter = rb_entry(node, struct uftrace_filter, node);
+	filter = rb_entry(node, struct motrace_filter, node);
 	TEST_STREQ(filter->name, "foo::bar");
 	TEST_EQ(filter->start, 0x2000UL);
 	TEST_EQ(filter->end, 0x2000UL + 0x1000UL);
 
 	node = rb_next(node);
-	filter = rb_entry(node, struct uftrace_filter, node);
+	filter = rb_entry(node, struct motrace_filter, node);
 	TEST_STREQ(filter->name, "foo::baz1");
 	TEST_EQ(filter->start, 0x3000UL);
 	TEST_EQ(filter->end, 0x3000UL + 0x1000UL);
 
 	node = rb_next(node);
-	filter = rb_entry(node, struct uftrace_filter, node);
+	filter = rb_entry(node, struct motrace_filter, node);
 	TEST_STREQ(filter->name, "foo::baz2");
 	TEST_EQ(filter->start, 0x4000UL);
 	TEST_EQ(filter->end, 0x4000UL + 0x1000UL);
 
 	node = rb_next(node);
-	filter = rb_entry(node, struct uftrace_filter, node);
+	filter = rb_entry(node, struct motrace_filter, node);
 	TEST_STREQ(filter->name, "foo::baz3");
 	TEST_EQ(filter->start, 0x5000UL);
 	TEST_EQ(filter->end, 0x5000UL + 0x1000UL);
 
 	pr_dbg("found 4 symbols. done\n");
-	uftrace_cleanup_triggers(&triggers);
+	motrace_cleanup_triggers(&triggers);
 	TEST_EQ(RB_EMPTY_ROOT(&triggers.root), true);
 
 	return TEST_OK;
@@ -1553,50 +1850,50 @@ TEST_CASE(filter_setup_regex)
 
 TEST_CASE(filter_setup_glob)
 {
-	struct uftrace_sym_info sinfo = {
+	struct motrace_sym_info sinfo = {
 		.loaded = false,
 	};
-	struct uftrace_triggers_info triggers = {
+	struct motrace_triggers_info triggers = {
 		.root = RB_ROOT,
 	};
 	struct rb_node *node;
-	struct uftrace_filter *filter;
-	struct uftrace_filter_setting setting = {
+	struct motrace_filter *filter;
+	struct motrace_filter_setting setting = {
 		.ptype = PATT_GLOB,
 	};
 
 	filter_test_load_symtabs(&sinfo);
 
 	pr_dbg("try to match with glob pattern: foo::b*\n");
-	uftrace_setup_filter("foo::b*", &sinfo, &triggers, &setting);
+	motrace_setup_filter("foo::b*", &sinfo, &triggers, &setting);
 	TEST_EQ(RB_EMPTY_ROOT(&triggers.root), false);
 
 	node = rb_first(&triggers.root);
-	filter = rb_entry(node, struct uftrace_filter, node);
+	filter = rb_entry(node, struct motrace_filter, node);
 	TEST_STREQ(filter->name, "foo::bar");
 	TEST_EQ(filter->start, 0x2000UL);
 	TEST_EQ(filter->end, 0x2000UL + 0x1000UL);
 
 	node = rb_next(node);
-	filter = rb_entry(node, struct uftrace_filter, node);
+	filter = rb_entry(node, struct motrace_filter, node);
 	TEST_STREQ(filter->name, "foo::baz1");
 	TEST_EQ(filter->start, 0x3000UL);
 	TEST_EQ(filter->end, 0x3000UL + 0x1000UL);
 
 	node = rb_next(node);
-	filter = rb_entry(node, struct uftrace_filter, node);
+	filter = rb_entry(node, struct motrace_filter, node);
 	TEST_STREQ(filter->name, "foo::baz2");
 	TEST_EQ(filter->start, 0x4000UL);
 	TEST_EQ(filter->end, 0x4000UL + 0x1000UL);
 
 	node = rb_next(node);
-	filter = rb_entry(node, struct uftrace_filter, node);
+	filter = rb_entry(node, struct motrace_filter, node);
 	TEST_STREQ(filter->name, "foo::baz3");
 	TEST_EQ(filter->start, 0x5000UL);
 	TEST_EQ(filter->end, 0x5000UL + 0x1000UL);
 
 	pr_dbg("found 4 symbols. done\n");
-	uftrace_cleanup_triggers(&triggers);
+	motrace_cleanup_triggers(&triggers);
 	TEST_EQ(RB_EMPTY_ROOT(&triggers.root), true);
 
 	return TEST_OK;
@@ -1604,47 +1901,47 @@ TEST_CASE(filter_setup_glob)
 
 TEST_CASE(filter_setup_notrace)
 {
-	struct uftrace_sym_info sinfo = {
+	struct motrace_sym_info sinfo = {
 		.loaded = false,
 	};
-	struct uftrace_triggers_info triggers = {
+	struct motrace_triggers_info triggers = {
 		.root = RB_ROOT,
 		.filter_count = 0,
 	};
 	struct rb_node *node;
-	struct uftrace_filter *filter;
-	struct uftrace_filter_setting setting = {
+	struct motrace_filter *filter;
+	struct motrace_filter_setting setting = {
 		.ptype = PATT_GLOB,
 	};
 
 	filter_test_load_symtabs(&sinfo);
 
 	pr_dbg("setup inclusive filter for foo::*\n");
-	uftrace_setup_filter("foo::*", &sinfo, &triggers, &setting);
+	motrace_setup_filter("foo::*", &sinfo, &triggers, &setting);
 	TEST_EQ(RB_EMPTY_ROOT(&triggers.root), false);
 	TEST_EQ(get_filter_mode(triggers.filter_count), FILTER_MODE_IN);
 
 	pr_dbg("add/replace exclusive filter for foo::foo\n");
-	uftrace_setup_filter("!foo::foo", &sinfo, &triggers, &setting);
+	motrace_setup_filter("!foo::foo", &sinfo, &triggers, &setting);
 	TEST_EQ(RB_EMPTY_ROOT(&triggers.root), false);
 	TEST_EQ(get_filter_mode(triggers.filter_count),
 		FILTER_MODE_IN); /* overall filter mode doesn't change */
 
 	pr_dbg("foo:foo should have OUT filter mode\n");
 	node = rb_first(&triggers.root);
-	filter = rb_entry(node, struct uftrace_filter, node);
+	filter = rb_entry(node, struct motrace_filter, node);
 	TEST_STREQ(filter->name, "foo::foo");
 	TEST_EQ(filter->trigger.flags, TRIGGER_FL_FILTER);
 	TEST_EQ(filter->trigger.fmode, FILTER_MODE_OUT);
 
 	pr_dbg("foo:bar should have IN filter mode\n");
 	node = rb_next(node);
-	filter = rb_entry(node, struct uftrace_filter, node);
+	filter = rb_entry(node, struct motrace_filter, node);
 	TEST_STREQ(filter->name, "foo::bar");
 	TEST_EQ(filter->trigger.flags, TRIGGER_FL_FILTER);
 	TEST_EQ(filter->trigger.fmode, FILTER_MODE_IN);
 
-	uftrace_cleanup_triggers(&triggers);
+	motrace_cleanup_triggers(&triggers);
 	TEST_EQ(RB_EMPTY_ROOT(&triggers.root), true);
 
 	return TEST_OK;
@@ -1652,46 +1949,46 @@ TEST_CASE(filter_setup_notrace)
 
 TEST_CASE(filter_match)
 {
-	struct uftrace_sym_info sinfo = {
+	struct motrace_sym_info sinfo = {
 		.loaded = false,
 	};
-	struct uftrace_triggers_info triggers = {
+	struct motrace_triggers_info triggers = {
 		.root = RB_ROOT,
 		.filter_count = 0,
 	};
-	struct uftrace_trigger tr;
-	struct uftrace_filter_setting setting = {
+	struct motrace_trigger tr;
+	struct motrace_filter_setting setting = {
 		.ptype = PATT_REGEX,
 	};
 
 	filter_test_load_symtabs(&sinfo);
 
 	pr_dbg("check filter address match with foo::foo at 0x1000-0x1fff\n");
-	uftrace_setup_filter("foo::foo", &sinfo, &triggers, &setting);
+	motrace_setup_filter("foo::foo", &sinfo, &triggers, &setting);
 	TEST_EQ(RB_EMPTY_ROOT(&triggers.root), false);
 	TEST_EQ(get_filter_mode(triggers.filter_count), FILTER_MODE_IN);
 
 	pr_dbg("check addresses inside the symbol\n");
 	memset(&tr, 0, sizeof(tr));
-	TEST_NE(uftrace_match_filter(0x1000, &triggers.root, &tr), NULL);
+	TEST_NE(motrace_match_filter(0x1000, &triggers.root, &tr), NULL);
 	TEST_EQ(tr.flags, TRIGGER_FL_FILTER);
 	TEST_EQ(tr.fmode, FILTER_MODE_IN);
 
 	memset(&tr, 0, sizeof(tr));
-	TEST_NE(uftrace_match_filter(0x1fff, &triggers.root, &tr), NULL);
+	TEST_NE(motrace_match_filter(0x1fff, &triggers.root, &tr), NULL);
 	TEST_EQ(tr.flags, TRIGGER_FL_FILTER);
 	TEST_EQ(tr.fmode, FILTER_MODE_IN);
 
 	pr_dbg("addresses out of the symbol should not have FILTER flags\n");
 	memset(&tr, 0, sizeof(tr));
-	TEST_EQ(uftrace_match_filter(0xfff, &triggers.root, &tr), NULL);
+	TEST_EQ(motrace_match_filter(0xfff, &triggers.root, &tr), NULL);
 	TEST_NE(tr.flags, TRIGGER_FL_FILTER);
 
 	memset(&tr, 0, sizeof(tr));
-	TEST_EQ(uftrace_match_filter(0x2000, &triggers.root, &tr), NULL);
+	TEST_EQ(motrace_match_filter(0x2000, &triggers.root, &tr), NULL);
 	TEST_NE(tr.flags, TRIGGER_FL_FILTER);
 
-	uftrace_cleanup_triggers(&triggers);
+	motrace_cleanup_triggers(&triggers);
 	TEST_EQ(RB_EMPTY_ROOT(&triggers.root), true);
 
 	return TEST_OK;
@@ -1699,14 +1996,14 @@ TEST_CASE(filter_match)
 
 TEST_CASE(trigger_setup_actions)
 {
-	struct uftrace_sym_info sinfo = {
+	struct motrace_sym_info sinfo = {
 		.loaded = false,
 	};
-	struct uftrace_triggers_info triggers = {
+	struct motrace_triggers_info triggers = {
 		.root = RB_ROOT,
 	};
-	struct uftrace_trigger tr;
-	struct uftrace_filter_setting setting = {
+	struct motrace_trigger tr;
+	struct motrace_filter_setting setting = {
 		.ptype = PATT_REGEX,
 		.lp64 = host_is_lp64(),
 	};
@@ -1714,40 +2011,40 @@ TEST_CASE(trigger_setup_actions)
 	filter_test_load_symtabs(&sinfo);
 
 	pr_dbg("checking depth trigger\n");
-	uftrace_setup_trigger("foo::bar@depth=2", &sinfo, &triggers, &setting);
+	motrace_setup_trigger("foo::bar@depth=2", &sinfo, &triggers, &setting);
 	TEST_EQ(RB_EMPTY_ROOT(&triggers.root), false);
 
 	memset(&tr, 0, sizeof(tr));
-	TEST_NE(uftrace_match_filter(0x2500, &triggers.root, &tr), NULL);
+	TEST_NE(motrace_match_filter(0x2500, &triggers.root, &tr), NULL);
 	TEST_EQ(tr.flags, TRIGGER_FL_DEPTH);
 	TEST_EQ(tr.depth, 2);
 
 	pr_dbg("checking backtrace trigger\n");
-	uftrace_setup_trigger("foo::bar@backtrace", &sinfo, &triggers, &setting);
+	motrace_setup_trigger("foo::bar@backtrace", &sinfo, &triggers, &setting);
 	memset(&tr, 0, sizeof(tr));
-	TEST_NE(uftrace_match_filter(0x2500, &triggers.root, &tr), NULL);
+	TEST_NE(motrace_match_filter(0x2500, &triggers.root, &tr), NULL);
 	TEST_EQ(tr.flags, TRIGGER_FL_DEPTH | TRIGGER_FL_BACKTRACE);
 
 	pr_dbg("checking trace-on trigger\n");
-	uftrace_setup_trigger("foo::baz1@traceon", &sinfo, &triggers, &setting);
+	motrace_setup_trigger("foo::baz1@traceon", &sinfo, &triggers, &setting);
 	memset(&tr, 0, sizeof(tr));
-	TEST_NE(uftrace_match_filter(0x3000, &triggers.root, &tr), NULL);
+	TEST_NE(motrace_match_filter(0x3000, &triggers.root, &tr), NULL);
 	TEST_EQ(tr.flags, TRIGGER_FL_TRACE_ON);
 
 	pr_dbg("checking trace-off trigger and overwrite the depth\n");
-	uftrace_setup_trigger("foo::baz3@trace_off,depth=1", &sinfo, &triggers, &setting);
+	motrace_setup_trigger("foo::baz3@trace_off,depth=1", &sinfo, &triggers, &setting);
 	memset(&tr, 0, sizeof(tr));
-	TEST_NE(uftrace_match_filter(0x5000, &triggers.root, &tr), NULL);
+	TEST_NE(motrace_match_filter(0x5000, &triggers.root, &tr), NULL);
 	TEST_EQ(tr.flags, TRIGGER_FL_TRACE_OFF | TRIGGER_FL_DEPTH);
 	TEST_EQ(tr.depth, 1);
 
 	pr_dbg("checking caller trigger\n");
-	uftrace_setup_trigger("foo::baz2@caller", &sinfo, &triggers, &setting);
+	motrace_setup_trigger("foo::baz2@caller", &sinfo, &triggers, &setting);
 	memset(&tr, 0, sizeof(tr));
-	TEST_NE(uftrace_match_filter(0x4200, &triggers.root, &tr), NULL);
+	TEST_NE(motrace_match_filter(0x4200, &triggers.root, &tr), NULL);
 	TEST_EQ(tr.flags, TRIGGER_FL_CALLER);
 
-	uftrace_cleanup_triggers(&triggers);
+	motrace_cleanup_triggers(&triggers);
 	TEST_EQ(RB_EMPTY_ROOT(&triggers.root), true);
 
 	return TEST_OK;
@@ -1755,15 +2052,15 @@ TEST_CASE(trigger_setup_actions)
 
 TEST_CASE(trigger_setup_filters)
 {
-	struct uftrace_sym_info sinfo = {
+	struct motrace_sym_info sinfo = {
 		.loaded = false,
 	};
-	struct uftrace_triggers_info triggers = {
+	struct motrace_triggers_info triggers = {
 		.root = RB_ROOT,
 		.filter_count = 0,
 	};
-	struct uftrace_trigger tr;
-	struct uftrace_filter_setting setting = {
+	struct motrace_trigger tr;
+	struct motrace_filter_setting setting = {
 		.ptype = PATT_REGEX,
 		.lp64 = host_is_lp64(),
 	};
@@ -1771,40 +2068,40 @@ TEST_CASE(trigger_setup_filters)
 	filter_test_load_symtabs(&sinfo);
 
 	pr_dbg("setup notrace filter with trigger action\n");
-	uftrace_setup_trigger("foo::bar@depth=2,notrace", &sinfo, &triggers, &setting);
+	motrace_setup_trigger("foo::bar@depth=2,notrace", &sinfo, &triggers, &setting);
 	TEST_EQ(RB_EMPTY_ROOT(&triggers.root), false);
 	TEST_EQ(get_filter_mode(triggers.filter_count), FILTER_MODE_OUT);
 
 	memset(&tr, 0, sizeof(tr));
-	TEST_NE(uftrace_match_filter(0x2500, &triggers.root, &tr), NULL);
+	TEST_NE(motrace_match_filter(0x2500, &triggers.root, &tr), NULL);
 	TEST_EQ(tr.flags, TRIGGER_FL_DEPTH | TRIGGER_FL_FILTER);
 	TEST_EQ(tr.depth, 2);
 	TEST_EQ(tr.fmode, FILTER_MODE_OUT);
 
 	pr_dbg("compare regular filter setting with trigger\n");
-	uftrace_setup_filter("foo::baz1", &sinfo, &triggers, &setting);
+	motrace_setup_filter("foo::baz1", &sinfo, &triggers, &setting);
 	TEST_EQ(get_filter_mode(triggers.filter_count), FILTER_MODE_IN);
 
 	memset(&tr, 0, sizeof(tr));
-	TEST_NE(uftrace_match_filter(0x3000, &triggers.root, &tr), NULL);
+	TEST_NE(motrace_match_filter(0x3000, &triggers.root, &tr), NULL);
 	TEST_EQ(tr.flags, TRIGGER_FL_FILTER);
 	TEST_EQ(tr.fmode, FILTER_MODE_IN);
 
-	uftrace_setup_trigger("foo::baz2@notrace", &sinfo, &triggers, &setting);
+	motrace_setup_trigger("foo::baz2@notrace", &sinfo, &triggers, &setting);
 	TEST_EQ(get_filter_mode(triggers.filter_count), FILTER_MODE_IN);
 
 	memset(&tr, 0, sizeof(tr));
-	TEST_NE(uftrace_match_filter(0x4100, &triggers.root, &tr), NULL);
+	TEST_NE(motrace_match_filter(0x4100, &triggers.root, &tr), NULL);
 	TEST_EQ(tr.flags, TRIGGER_FL_FILTER);
 	TEST_EQ(tr.fmode, FILTER_MODE_OUT);
 
 	pr_dbg("check caller filter setting\n");
-	uftrace_setup_caller_filter("foo::baz3", &sinfo, &triggers, &setting);
+	motrace_setup_caller_filter("foo::baz3", &sinfo, &triggers, &setting);
 	memset(&tr, 0, sizeof(tr));
-	TEST_NE(uftrace_match_filter(0x5000, &triggers.root, &tr), NULL);
+	TEST_NE(motrace_match_filter(0x5000, &triggers.root, &tr), NULL);
 	TEST_EQ(tr.flags, TRIGGER_FL_CALLER);
 
-	uftrace_cleanup_triggers(&triggers);
+	motrace_cleanup_triggers(&triggers);
 	TEST_EQ(RB_EMPTY_ROOT(&triggers.root), true);
 
 	return TEST_OK;
@@ -1813,55 +2110,55 @@ TEST_CASE(trigger_setup_filters)
 /* same node tests as filter_setup_glob */
 TEST_CASE(filter_rbtree_deep_copy)
 {
-	struct uftrace_sym_info sinfo = {
+	struct motrace_sym_info sinfo = {
 		.loaded = false,
 	};
-	struct uftrace_triggers_info orig = {
+	struct motrace_triggers_info orig = {
 		.root = RB_ROOT,
 	};
-	struct uftrace_triggers_info copy = {
+	struct motrace_triggers_info copy = {
 		.root = RB_ROOT,
 	};
 	struct rb_node *node;
-	struct uftrace_filter *filter;
-	struct uftrace_filter_setting setting = {
+	struct motrace_filter *filter;
+	struct motrace_filter_setting setting = {
 		.ptype = PATT_GLOB,
 	};
 
 	filter_test_load_symtabs(&sinfo);
 
-	uftrace_setup_filter("foo::b*", &sinfo, &orig, &setting);
+	motrace_setup_filter("foo::b*", &sinfo, &orig, &setting);
 	pr_dbg("checking filter deep copy\n");
-	copy = uftrace_deep_copy_triggers(&orig);
-	uftrace_cleanup_filter(&orig.root);
+	copy = motrace_deep_copy_triggers(&orig);
+	motrace_cleanup_filter(&orig.root);
 
 	TEST_EQ(RB_EMPTY_ROOT(&copy.root), false);
 
 	node = rb_first(&copy.root);
-	filter = rb_entry(node, struct uftrace_filter, node);
+	filter = rb_entry(node, struct motrace_filter, node);
 	TEST_STREQ(filter->name, "foo::bar");
 	TEST_EQ(filter->start, 0x2000UL);
 	TEST_EQ(filter->end, 0x2000UL + 0x1000UL);
 
 	node = rb_next(node);
-	filter = rb_entry(node, struct uftrace_filter, node);
+	filter = rb_entry(node, struct motrace_filter, node);
 	TEST_STREQ(filter->name, "foo::baz1");
 	TEST_EQ(filter->start, 0x3000UL);
 	TEST_EQ(filter->end, 0x3000UL + 0x1000UL);
 
 	node = rb_next(node);
-	filter = rb_entry(node, struct uftrace_filter, node);
+	filter = rb_entry(node, struct motrace_filter, node);
 	TEST_STREQ(filter->name, "foo::baz2");
 	TEST_EQ(filter->start, 0x4000UL);
 	TEST_EQ(filter->end, 0x4000UL + 0x1000UL);
 
 	node = rb_next(node);
-	filter = rb_entry(node, struct uftrace_filter, node);
+	filter = rb_entry(node, struct motrace_filter, node);
 	TEST_STREQ(filter->name, "foo::baz3");
 	TEST_EQ(filter->start, 0x5000UL);
 	TEST_EQ(filter->end, 0x5000UL + 0x1000UL);
 
-	uftrace_cleanup_filter(&copy.root);
+	motrace_cleanup_filter(&copy.root);
 	TEST_EQ(RB_EMPTY_ROOT(&copy.root), true);
 
 	return TEST_OK;
@@ -1869,15 +2166,15 @@ TEST_CASE(filter_rbtree_deep_copy)
 
 TEST_CASE(trigger_setup_args)
 {
-	struct uftrace_sym_info sinfo = {
+	struct motrace_sym_info sinfo = {
 		.loaded = false,
 	};
-	struct uftrace_triggers_info triggers = {
+	struct motrace_triggers_info triggers = {
 		.root = RB_ROOT,
 	};
-	struct uftrace_trigger tr;
-	struct uftrace_arg_spec *spec;
-	struct uftrace_filter_setting setting = {
+	struct motrace_trigger tr;
+	struct motrace_arg_spec *spec;
+	struct motrace_filter_setting setting = {
 		.ptype = PATT_REGEX,
 		.lp64 = host_is_lp64(),
 		.arch = UFT_CPU_X86_64,
@@ -1887,18 +2184,18 @@ TEST_CASE(trigger_setup_args)
 	filter_test_load_symtabs(&sinfo);
 
 	pr_dbg("check regular argument setting\n");
-	uftrace_setup_argument("foo::bar@arg1", &sinfo, &triggers, &setting);
+	motrace_setup_argument("foo::bar@arg1", &sinfo, &triggers, &setting);
 	TEST_EQ(RB_EMPTY_ROOT(&triggers.root), false);
 
 	memset(&tr, 0, sizeof(tr));
-	TEST_NE(uftrace_match_filter(0x2500, &triggers.root, &tr), NULL);
+	TEST_NE(motrace_match_filter(0x2500, &triggers.root, &tr), NULL);
 	TEST_EQ(tr.flags, TRIGGER_FL_ARGUMENT);
 	TEST_NE(tr.pargs, NULL);
 
 	pr_dbg("compare argument setting via trigger\n");
-	uftrace_setup_trigger("foo::bar@arg2/s", &sinfo, &triggers, &setting);
+	motrace_setup_trigger("foo::bar@arg2/s", &sinfo, &triggers, &setting);
 	memset(&tr, 0, sizeof(tr));
-	TEST_NE(uftrace_match_filter(0x2500, &triggers.root, &tr), NULL);
+	TEST_NE(motrace_match_filter(0x2500, &triggers.root, &tr), NULL);
 	TEST_EQ(tr.flags, TRIGGER_FL_ARGUMENT);
 	TEST_NE(tr.pargs, NULL);
 
@@ -1921,10 +2218,10 @@ TEST_CASE(trigger_setup_args)
 	TEST_EQ(count, 2);
 
 	pr_dbg("check argument format, type and size\n");
-	uftrace_setup_argument("foo::baz1@arg1/i32,arg2/x64,fparg1/32,fparg2", &sinfo, &triggers,
+	motrace_setup_argument("foo::baz1@arg1/i32,arg2/x64,fparg1/32,fparg2", &sinfo, &triggers,
 			       &setting);
 	memset(&tr, 0, sizeof(tr));
-	TEST_NE(uftrace_match_filter(0x3999, &triggers.root, &tr), NULL);
+	TEST_NE(motrace_match_filter(0x3999, &triggers.root, &tr), NULL);
 	TEST_EQ(tr.flags, TRIGGER_FL_ARGUMENT);
 
 	count = 0;
@@ -1966,10 +2263,10 @@ TEST_CASE(trigger_setup_args)
 	TEST_EQ(count, 4);
 
 	pr_dbg("check argument location\n");
-	uftrace_setup_trigger("foo::baz2@arg1/c,arg2/x32%rdi,arg3%stack+4,retval/f64", &sinfo,
+	motrace_setup_trigger("foo::baz2@arg1/c,arg2/x32%rdi,arg3%stack+4,retval/f64", &sinfo,
 			      &triggers, &setting);
 	memset(&tr, 0, sizeof(tr));
-	TEST_NE(uftrace_match_filter(0x4000, &triggers.root, &tr), NULL);
+	TEST_NE(motrace_match_filter(0x4000, &triggers.root, &tr), NULL);
 	TEST_EQ(tr.flags, TRIGGER_FL_ARGUMENT | TRIGGER_FL_RETVAL);
 
 	count = 0;
@@ -2012,35 +2309,35 @@ TEST_CASE(trigger_setup_args)
 	}
 	TEST_EQ(count, 4);
 
-	uftrace_cleanup_triggers(&triggers);
+	motrace_cleanup_triggers(&triggers);
 	TEST_EQ(RB_EMPTY_ROOT(&triggers.root), true);
 
 	return TEST_OK;
 }
 
-static struct uftrace_mmap *locfilter_test_load_mmap(void)
+static struct motrace_mmap *locfilter_test_load_mmap(void)
 {
-	static struct uftrace_symbol syms[] = {
+	static struct motrace_symbol syms[] = {
 		{ 0x1000, 0x1000, ST_GLOBAL_FUNC, "command_dump" },
 		{ 0x2000, 0x1000, ST_GLOBAL_FUNC, "command_replay" },
 		{ 0x3000, 0x1000, ST_GLOBAL_FUNC, "command_report" },
 		{ 0x4000, 0x1000, ST_GLOBAL_FUNC, "command_foo" },
 	};
 
-	static struct uftrace_dbg_file dfiles[] = {
-		{ .name = "uftrace/cmds/dump.c" },
-		{ .name = "uftrace/cmds/replay.c" },
-		{ .name = "uftrace/cmds/report.c" },
-		{ .name = "uftrace/cmds1/foo.c" },
+	static struct motrace_dbg_file dfiles[] = {
+		{ .name = "motrace/cmds/dump.c" },
+		{ .name = "motrace/cmds/replay.c" },
+		{ .name = "motrace/cmds/report.c" },
+		{ .name = "motrace/cmds1/foo.c" },
 	};
-	static struct uftrace_dbg_loc locs[] = {
+	static struct motrace_dbg_loc locs[] = {
 		{ .file = &dfiles[0] },
 		{ .file = &dfiles[1] },
 		{ .file = &dfiles[2] },
 		{ .file = &dfiles[3] },
 	};
 
-	static struct uftrace_module mod = {
+	static struct motrace_module mod = {
 		.symtab = {
 			.sym    = syms,
 			.nr_sym = ARRAY_SIZE(syms),
@@ -2051,7 +2348,7 @@ static struct uftrace_mmap *locfilter_test_load_mmap(void)
 			.loaded = true,
 		}
 	};
-	static struct uftrace_mmap map = {
+	static struct motrace_mmap map = {
 		.mod = &mod,
 		.start = 0x0,
 		.end = 0x6000,
@@ -2063,23 +2360,23 @@ static struct uftrace_mmap *locfilter_test_load_mmap(void)
 	return &map;
 }
 
-static struct uftrace_mmap *locfilter_test_load_mmap2(void)
+static struct motrace_mmap *locfilter_test_load_mmap2(void)
 {
-	static struct uftrace_symbol syms2[] = {
+	static struct motrace_symbol syms2[] = {
 		{ 0xa000, 0x1000, ST_GLOBAL_FUNC, "util_fstack" },
 		{ 0xb000, 0x1000, ST_GLOBAL_FUNC, "util_report" },
 	};
 
-	static struct uftrace_dbg_file dfiles2[] = {
-		{ .name = "uftrace/utils/fstack.c" },
-		{ .name = "uftrace/utils/report.c" },
+	static struct motrace_dbg_file dfiles2[] = {
+		{ .name = "motrace/utils/fstack.c" },
+		{ .name = "motrace/utils/report.c" },
 	};
-	static struct uftrace_dbg_loc locs2[] = {
+	static struct motrace_dbg_loc locs2[] = {
 		{ .file = &dfiles2[0] },
 		{ .file = &dfiles2[1] },
 	};
 
-	static struct uftrace_module mod2 = {
+	static struct motrace_module mod2 = {
 		.symtab = {
 			.sym    = syms2,
 			.nr_sym = ARRAY_SIZE(syms2),
@@ -2090,7 +2387,7 @@ static struct uftrace_mmap *locfilter_test_load_mmap2(void)
 			.loaded = true,
 		}
 	};
-	static struct uftrace_mmap map2 = {
+	static struct motrace_mmap map2 = {
 		.mod = &mod2,
 		.start = 0x0,
 		.end = 0xe000,
@@ -2102,10 +2399,10 @@ static struct uftrace_mmap *locfilter_test_load_mmap2(void)
 	return &map2;
 }
 
-static void locfilter_test_load_symtabs(struct uftrace_sym_info *sinfo)
+static void locfilter_test_load_symtabs(struct motrace_sym_info *sinfo)
 {
-	struct uftrace_mmap *map = locfilter_test_load_mmap();
-	struct uftrace_mmap *map2 = locfilter_test_load_mmap2();
+	struct motrace_mmap *map = locfilter_test_load_mmap();
+	struct motrace_mmap *map2 = locfilter_test_load_mmap2();
 
 	sinfo->maps = map;
 	sinfo->exec_map = map;
@@ -2117,47 +2414,47 @@ static void locfilter_test_load_symtabs(struct uftrace_sym_info *sinfo)
 /* Simple pattern arguments are treated as regex after conversion. */
 TEST_CASE(locfilter_setup_simple)
 {
-	struct uftrace_sym_info sinfo = {
+	struct motrace_sym_info sinfo = {
 		.loaded = false,
 	};
-	struct uftrace_triggers_info triggers = {
+	struct motrace_triggers_info triggers = {
 		.root = RB_ROOT,
 	};
 	struct rb_node *node;
-	struct uftrace_filter *filter;
-	struct uftrace_filter_setting setting = {
+	struct motrace_filter *filter;
+	struct motrace_filter_setting setting = {
 		.ptype = PATT_REGEX,
 	};
 
 	locfilter_test_load_symtabs(&sinfo);
 
 	pr_dbg("checking simple match\n");
-	uftrace_setup_loc_filter("uftrace/cmds/replay.c", &sinfo, &triggers, &setting);
+	motrace_setup_loc_filter("motrace/cmds/replay.c", &sinfo, &triggers, &setting);
 	TEST_EQ(RB_EMPTY_ROOT(&triggers.root), false);
 
 	node = rb_first(&triggers.root);
-	filter = rb_entry(node, struct uftrace_filter, node);
+	filter = rb_entry(node, struct motrace_filter, node);
 	TEST_STREQ(filter->name, "command_replay");
 	TEST_EQ(filter->start, 0x2000UL);
 	TEST_EQ(filter->end, 0x2000UL + 0x1000UL);
 
-	uftrace_cleanup_triggers(&triggers);
+	motrace_cleanup_triggers(&triggers);
 	TEST_EQ(RB_EMPTY_ROOT(&triggers.root), true);
 
 	pr_dbg("checking base name match\n");
-	uftrace_setup_loc_filter("dump.c", &sinfo, &triggers, &setting);
+	motrace_setup_loc_filter("dump.c", &sinfo, &triggers, &setting);
 	TEST_EQ(RB_EMPTY_ROOT(&triggers.root), false);
 
 	node = rb_first(&triggers.root);
-	filter = rb_entry(node, struct uftrace_filter, node);
+	filter = rb_entry(node, struct motrace_filter, node);
 	TEST_STREQ(filter->name, "command_dump");
 	TEST_EQ(filter->start, 0x1000UL);
 	TEST_EQ(filter->end, 0x1000UL + 0x1000UL);
-	uftrace_cleanup_triggers(&triggers);
+	motrace_cleanup_triggers(&triggers);
 	TEST_EQ(RB_EMPTY_ROOT(&triggers.root), true);
 
 	pr_dbg("checking unknown symbol\n");
-	uftrace_setup_loc_filter("invalid_name", &sinfo, &triggers, &setting);
+	motrace_setup_loc_filter("invalid_name", &sinfo, &triggers, &setting);
 	TEST_EQ(RB_EMPTY_ROOT(&triggers.root), true);
 
 	return TEST_OK;
@@ -2165,38 +2462,38 @@ TEST_CASE(locfilter_setup_simple)
 
 TEST_CASE(locfilter_setup_regex)
 {
-	struct uftrace_sym_info sinfo = {
+	struct motrace_sym_info sinfo = {
 		.loaded = false,
 	};
-	struct uftrace_triggers_info triggers = {
+	struct motrace_triggers_info triggers = {
 		.root = RB_ROOT,
 	};
 	struct rb_node *node;
-	struct uftrace_filter *filter;
-	struct uftrace_filter_setting setting = {
+	struct motrace_filter *filter;
+	struct motrace_filter_setting setting = {
 		.ptype = PATT_REGEX,
 	};
 
 	locfilter_test_load_symtabs(&sinfo);
 
 	pr_dbg("try to match with regex pattern: re.*\n");
-	uftrace_setup_loc_filter("re.*", &sinfo, &triggers, &setting);
+	motrace_setup_loc_filter("re.*", &sinfo, &triggers, &setting);
 	TEST_EQ(RB_EMPTY_ROOT(&triggers.root), false);
 
 	node = rb_first(&triggers.root);
-	filter = rb_entry(node, struct uftrace_filter, node);
+	filter = rb_entry(node, struct motrace_filter, node);
 	TEST_STREQ(filter->name, "command_replay");
 	TEST_EQ(filter->start, 0x2000UL);
 	TEST_EQ(filter->end, 0x2000UL + 0x1000UL);
 
 	node = rb_next(node);
-	filter = rb_entry(node, struct uftrace_filter, node);
+	filter = rb_entry(node, struct motrace_filter, node);
 	TEST_STREQ(filter->name, "command_report");
 	TEST_EQ(filter->start, 0x3000UL);
 	TEST_EQ(filter->end, 0x3000UL + 0x1000UL);
 
 	node = rb_next(node);
-	filter = rb_entry(node, struct uftrace_filter, node);
+	filter = rb_entry(node, struct motrace_filter, node);
 	TEST_STREQ(filter->name, "util_report");
 	TEST_EQ(filter->start, 0xb000UL);
 	TEST_EQ(filter->end, 0xb000UL + 0x1000UL);
@@ -2204,7 +2501,7 @@ TEST_CASE(locfilter_setup_regex)
 	TEST_EQ(rb_next(node), NULL);
 
 	pr_dbg("found 3 symbols. done\n");
-	uftrace_cleanup_triggers(&triggers);
+	motrace_cleanup_triggers(&triggers);
 	TEST_EQ(RB_EMPTY_ROOT(&triggers.root), true);
 
 	return TEST_OK;
@@ -2212,38 +2509,38 @@ TEST_CASE(locfilter_setup_regex)
 
 TEST_CASE(locfilter_setup_glob)
 {
-	struct uftrace_sym_info sinfo = {
+	struct motrace_sym_info sinfo = {
 		.loaded = false,
 	};
-	struct uftrace_triggers_info triggers = {
+	struct motrace_triggers_info triggers = {
 		.root = RB_ROOT,
 	};
 	struct rb_node *node;
-	struct uftrace_filter *filter;
-	struct uftrace_filter_setting setting = {
+	struct motrace_filter *filter;
+	struct motrace_filter_setting setting = {
 		.ptype = PATT_GLOB,
 	};
 
 	locfilter_test_load_symtabs(&sinfo);
 
 	pr_dbg("try to match with glob pattern: *re*\n");
-	uftrace_setup_loc_filter("*re*", &sinfo, &triggers, &setting);
+	motrace_setup_loc_filter("*re*", &sinfo, &triggers, &setting);
 	TEST_EQ(RB_EMPTY_ROOT(&triggers.root), false);
 
 	node = rb_first(&triggers.root);
-	filter = rb_entry(node, struct uftrace_filter, node);
+	filter = rb_entry(node, struct motrace_filter, node);
 	TEST_STREQ(filter->name, "command_replay");
 	TEST_EQ(filter->start, 0x2000UL);
 	TEST_EQ(filter->end, 0x2000UL + 0x1000UL);
 
 	node = rb_next(node);
-	filter = rb_entry(node, struct uftrace_filter, node);
+	filter = rb_entry(node, struct motrace_filter, node);
 	TEST_STREQ(filter->name, "command_report");
 	TEST_EQ(filter->start, 0x3000UL);
 	TEST_EQ(filter->end, 0x3000UL + 0x1000UL);
 
 	node = rb_next(node);
-	filter = rb_entry(node, struct uftrace_filter, node);
+	filter = rb_entry(node, struct motrace_filter, node);
 	TEST_STREQ(filter->name, "util_report");
 	TEST_EQ(filter->start, 0xb000UL);
 	TEST_EQ(filter->end, 0xb000UL + 0x1000UL);
@@ -2251,7 +2548,7 @@ TEST_CASE(locfilter_setup_glob)
 	TEST_EQ(rb_next(node), NULL);
 
 	pr_dbg("found 3 symbols. done\n");
-	uftrace_cleanup_triggers(&triggers);
+	motrace_cleanup_triggers(&triggers);
 	TEST_EQ(RB_EMPTY_ROOT(&triggers.root), true);
 
 	return TEST_OK;
@@ -2260,38 +2557,38 @@ TEST_CASE(locfilter_setup_glob)
 /* Simple pattern arguments are treated as regex after conversion. */
 TEST_CASE(locfilter_setup_dir_simple)
 {
-	struct uftrace_sym_info sinfo = {
+	struct motrace_sym_info sinfo = {
 		.loaded = false,
 	};
-	struct uftrace_triggers_info triggers = {
+	struct motrace_triggers_info triggers = {
 		.root = RB_ROOT,
 	};
 	struct rb_node *node;
-	struct uftrace_filter *filter;
-	struct uftrace_filter_setting setting = {
+	struct motrace_filter *filter;
+	struct motrace_filter_setting setting = {
 		.ptype = PATT_REGEX,
 	};
 
 	locfilter_test_load_symtabs(&sinfo);
 
 	pr_dbg("try to match directory with pattern: cmds\n");
-	uftrace_setup_loc_filter("cmds", &sinfo, &triggers, &setting);
+	motrace_setup_loc_filter("cmds", &sinfo, &triggers, &setting);
 	TEST_EQ(RB_EMPTY_ROOT(&triggers.root), false);
 
 	node = rb_first(&triggers.root);
-	filter = rb_entry(node, struct uftrace_filter, node);
+	filter = rb_entry(node, struct motrace_filter, node);
 	TEST_STREQ(filter->name, "command_dump");
 	TEST_EQ(filter->start, 0x1000UL);
 	TEST_EQ(filter->end, 0x1000UL + 0x1000UL);
 
 	node = rb_next(node);
-	filter = rb_entry(node, struct uftrace_filter, node);
+	filter = rb_entry(node, struct motrace_filter, node);
 	TEST_STREQ(filter->name, "command_replay");
 	TEST_EQ(filter->start, 0x2000UL);
 	TEST_EQ(filter->end, 0x2000UL + 0x1000UL);
 
 	node = rb_next(node);
-	filter = rb_entry(node, struct uftrace_filter, node);
+	filter = rb_entry(node, struct motrace_filter, node);
 	TEST_STREQ(filter->name, "command_report");
 	TEST_EQ(filter->start, 0x3000UL);
 	TEST_EQ(filter->end, 0x3000UL + 0x1000UL);
@@ -2299,15 +2596,15 @@ TEST_CASE(locfilter_setup_dir_simple)
 	TEST_EQ(rb_next(node), NULL);
 
 	pr_dbg("found 3 symbols. done\n");
-	uftrace_cleanup_triggers(&triggers);
+	motrace_cleanup_triggers(&triggers);
 	TEST_EQ(RB_EMPTY_ROOT(&triggers.root), true);
 
 	pr_dbg("try to match directory with pattern: /cmds\n");
-	uftrace_setup_loc_filter("/cmds", &sinfo, &triggers, &setting);
+	motrace_setup_loc_filter("/cmds", &sinfo, &triggers, &setting);
 	TEST_EQ(RB_EMPTY_ROOT(&triggers.root), false);
 
 	node = rb_first(&triggers.root);
-	filter = rb_entry(node, struct uftrace_filter, node);
+	filter = rb_entry(node, struct motrace_filter, node);
 	TEST_STREQ(filter->name, "command_dump");
 	TEST_EQ(filter->start, 0x1000UL);
 	TEST_EQ(filter->end, 0x1000UL + 0x1000UL);
@@ -2317,15 +2614,15 @@ TEST_CASE(locfilter_setup_dir_simple)
 	TEST_EQ(node = rb_next(node), NULL);
 
 	pr_dbg("found 3 symbols. done\n");
-	uftrace_cleanup_triggers(&triggers);
+	motrace_cleanup_triggers(&triggers);
 	TEST_EQ(RB_EMPTY_ROOT(&triggers.root), true);
 
 	pr_dbg("try to match directory with pattern: cmds/\n");
-	uftrace_setup_loc_filter("cmds/", &sinfo, &triggers, &setting);
+	motrace_setup_loc_filter("cmds/", &sinfo, &triggers, &setting);
 	TEST_EQ(RB_EMPTY_ROOT(&triggers.root), false);
 
 	node = rb_first(&triggers.root);
-	filter = rb_entry(node, struct uftrace_filter, node);
+	filter = rb_entry(node, struct motrace_filter, node);
 	TEST_STREQ(filter->name, "command_dump");
 	TEST_EQ(filter->start, 0x1000UL);
 	TEST_EQ(filter->end, 0x1000UL + 0x1000UL);
@@ -2335,15 +2632,15 @@ TEST_CASE(locfilter_setup_dir_simple)
 	TEST_EQ(node = rb_next(node), NULL);
 
 	pr_dbg("found 3 symbols. done\n");
-	uftrace_cleanup_triggers(&triggers);
+	motrace_cleanup_triggers(&triggers);
 	TEST_EQ(RB_EMPTY_ROOT(&triggers.root), true);
 
-	pr_dbg("try to match directory with pattern: /uftrace/cmds/\n");
-	uftrace_setup_loc_filter("/uftrace/cmds/", &sinfo, &triggers, &setting);
+	pr_dbg("try to match directory with pattern: /motrace/cmds/\n");
+	motrace_setup_loc_filter("/motrace/cmds/", &sinfo, &triggers, &setting);
 	TEST_EQ(RB_EMPTY_ROOT(&triggers.root), false);
 
 	node = rb_first(&triggers.root);
-	filter = rb_entry(node, struct uftrace_filter, node);
+	filter = rb_entry(node, struct motrace_filter, node);
 	TEST_STREQ(filter->name, "command_dump");
 	TEST_EQ(filter->start, 0x1000UL);
 	TEST_EQ(filter->end, 0x1000UL + 0x1000UL);
@@ -2353,15 +2650,15 @@ TEST_CASE(locfilter_setup_dir_simple)
 	TEST_EQ(node = rb_next(node), NULL);
 
 	pr_dbg("found 3 symbols. done\n");
-	uftrace_cleanup_triggers(&triggers);
+	motrace_cleanup_triggers(&triggers);
 	TEST_EQ(RB_EMPTY_ROOT(&triggers.root), true);
 
-	pr_dbg("try to match directory with pattern: uftrace/cmds/\n");
-	uftrace_setup_loc_filter("uftrace/cmds", &sinfo, &triggers, &setting);
+	pr_dbg("try to match directory with pattern: motrace/cmds/\n");
+	motrace_setup_loc_filter("motrace/cmds", &sinfo, &triggers, &setting);
 	TEST_EQ(RB_EMPTY_ROOT(&triggers.root), false);
 
 	node = rb_first(&triggers.root);
-	filter = rb_entry(node, struct uftrace_filter, node);
+	filter = rb_entry(node, struct motrace_filter, node);
 	TEST_STREQ(filter->name, "command_dump");
 	TEST_EQ(filter->start, 0x1000UL);
 	TEST_EQ(filter->end, 0x1000UL + 0x1000UL);
@@ -2371,55 +2668,55 @@ TEST_CASE(locfilter_setup_dir_simple)
 	TEST_EQ(node = rb_next(node), NULL);
 
 	pr_dbg("found 3 symbols. done\n");
-	uftrace_cleanup_triggers(&triggers);
+	motrace_cleanup_triggers(&triggers);
 	TEST_EQ(RB_EMPTY_ROOT(&triggers.root), true);
 
-	pr_dbg("try to match directory with pattern: /uftrace\n");
-	uftrace_setup_loc_filter("/uftrace", &sinfo, &triggers, &setting);
+	pr_dbg("try to match directory with pattern: /motrace\n");
+	motrace_setup_loc_filter("/motrace", &sinfo, &triggers, &setting);
 	TEST_EQ(RB_EMPTY_ROOT(&triggers.root), false);
 
 	node = rb_first(&triggers.root);
-	filter = rb_entry(node, struct uftrace_filter, node);
+	filter = rb_entry(node, struct motrace_filter, node);
 	TEST_STREQ(filter->name, "command_dump");
 	TEST_EQ(filter->start, 0x1000UL);
 	TEST_EQ(filter->end, 0x1000UL + 0x1000UL);
 
 	node = rb_next(node);
-	filter = rb_entry(node, struct uftrace_filter, node);
+	filter = rb_entry(node, struct motrace_filter, node);
 	TEST_STREQ(filter->name, "command_replay");
 	TEST_EQ(filter->start, 0x2000UL);
 	TEST_EQ(filter->end, 0x2000UL + 0x1000UL);
 
 	node = rb_next(node);
-	filter = rb_entry(node, struct uftrace_filter, node);
+	filter = rb_entry(node, struct motrace_filter, node);
 	TEST_STREQ(filter->name, "command_report");
 	TEST_EQ(filter->start, 0x3000UL);
 	TEST_EQ(filter->end, 0x3000UL + 0x1000UL);
 
 	node = rb_next(node);
-	filter = rb_entry(node, struct uftrace_filter, node);
+	filter = rb_entry(node, struct motrace_filter, node);
 	TEST_STREQ(filter->name, "command_foo");
 	TEST_EQ(filter->start, 0x4000UL);
 	TEST_EQ(filter->end, 0x4000UL + 0x1000UL);
 
 	node = rb_next(node);
-	filter = rb_entry(node, struct uftrace_filter, node);
+	filter = rb_entry(node, struct motrace_filter, node);
 	TEST_STREQ(filter->name, "util_fstack");
 	TEST_EQ(filter->start, 0xa000UL);
 	TEST_EQ(filter->end, 0xa000UL + 0x1000UL);
 
 	node = rb_next(node);
-	filter = rb_entry(node, struct uftrace_filter, node);
+	filter = rb_entry(node, struct motrace_filter, node);
 	TEST_STREQ(filter->name, "util_report");
 	TEST_EQ(filter->start, 0xb000UL);
 	TEST_EQ(filter->end, 0xb000UL + 0x1000UL);
 
 	pr_dbg("found 6 symbols. done\n");
-	uftrace_cleanup_triggers(&triggers);
+	motrace_cleanup_triggers(&triggers);
 	TEST_EQ(RB_EMPTY_ROOT(&triggers.root), true);
 
 	pr_dbg("checking invalid directory match\n");
-	uftrace_setup_loc_filter("youftrace", &sinfo, &triggers, &setting);
+	motrace_setup_loc_filter("yomotrace", &sinfo, &triggers, &setting);
 	TEST_EQ(RB_EMPTY_ROOT(&triggers.root), true);
 
 	return TEST_OK;
@@ -2427,38 +2724,38 @@ TEST_CASE(locfilter_setup_dir_simple)
 
 TEST_CASE(locfilter_setup_dir_regex)
 {
-	struct uftrace_sym_info sinfo = {
+	struct motrace_sym_info sinfo = {
 		.loaded = false,
 	};
-	struct uftrace_triggers_info triggers = {
+	struct motrace_triggers_info triggers = {
 		.root = RB_ROOT,
 	};
 	struct rb_node *node;
-	struct uftrace_filter *filter;
-	struct uftrace_filter_setting setting = {
+	struct motrace_filter *filter;
+	struct motrace_filter_setting setting = {
 		.ptype = PATT_REGEX,
 	};
 
 	locfilter_test_load_symtabs(&sinfo);
 
 	pr_dbg("try to match directory with regex pattern: cmds/.*\n");
-	uftrace_setup_loc_filter("cmds/.*", &sinfo, &triggers, &setting);
+	motrace_setup_loc_filter("cmds/.*", &sinfo, &triggers, &setting);
 	TEST_EQ(RB_EMPTY_ROOT(&triggers.root), false);
 
 	node = rb_first(&triggers.root);
-	filter = rb_entry(node, struct uftrace_filter, node);
+	filter = rb_entry(node, struct motrace_filter, node);
 	TEST_STREQ(filter->name, "command_dump");
 	TEST_EQ(filter->start, 0x1000UL);
 	TEST_EQ(filter->end, 0x1000UL + 0x1000UL);
 
 	node = rb_next(node);
-	filter = rb_entry(node, struct uftrace_filter, node);
+	filter = rb_entry(node, struct motrace_filter, node);
 	TEST_STREQ(filter->name, "command_replay");
 	TEST_EQ(filter->start, 0x2000UL);
 	TEST_EQ(filter->end, 0x2000UL + 0x1000UL);
 
 	node = rb_next(node);
-	filter = rb_entry(node, struct uftrace_filter, node);
+	filter = rb_entry(node, struct motrace_filter, node);
 	TEST_STREQ(filter->name, "command_report");
 	TEST_EQ(filter->start, 0x3000UL);
 	TEST_EQ(filter->end, 0x3000UL + 0x1000UL);
@@ -2466,11 +2763,11 @@ TEST_CASE(locfilter_setup_dir_regex)
 	TEST_EQ(rb_next(node), NULL);
 
 	pr_dbg("found 3 symbols. done\n");
-	uftrace_cleanup_triggers(&triggers);
+	motrace_cleanup_triggers(&triggers);
 	TEST_EQ(RB_EMPTY_ROOT(&triggers.root), true);
 
 	pr_dbg("checking invalid directory match\n");
-	uftrace_setup_loc_filter("cmd/.*", &sinfo, &triggers, &setting);
+	motrace_setup_loc_filter("cmd/.*", &sinfo, &triggers, &setting);
 	TEST_EQ(RB_EMPTY_ROOT(&triggers.root), true);
 
 	return TEST_OK;
@@ -2478,38 +2775,38 @@ TEST_CASE(locfilter_setup_dir_regex)
 
 TEST_CASE(locfilter_setup_dir_glob)
 {
-	struct uftrace_sym_info sinfo = {
+	struct motrace_sym_info sinfo = {
 		.loaded = false,
 	};
-	struct uftrace_triggers_info triggers = {
+	struct motrace_triggers_info triggers = {
 		.root = RB_ROOT,
 	};
 	struct rb_node *node;
-	struct uftrace_filter *filter;
-	struct uftrace_filter_setting setting = {
+	struct motrace_filter *filter;
+	struct motrace_filter_setting setting = {
 		.ptype = PATT_GLOB,
 	};
 
 	locfilter_test_load_symtabs(&sinfo);
 
 	pr_dbg("try to match with glob pattern: *cmds/*\n");
-	uftrace_setup_loc_filter("*cmds/*", &sinfo, &triggers, &setting);
+	motrace_setup_loc_filter("*cmds/*", &sinfo, &triggers, &setting);
 	TEST_EQ(RB_EMPTY_ROOT(&triggers.root), false);
 
 	node = rb_first(&triggers.root);
-	filter = rb_entry(node, struct uftrace_filter, node);
+	filter = rb_entry(node, struct motrace_filter, node);
 	TEST_STREQ(filter->name, "command_dump");
 	TEST_EQ(filter->start, 0x1000UL);
 	TEST_EQ(filter->end, 0x1000UL + 0x1000UL);
 
 	node = rb_next(node);
-	filter = rb_entry(node, struct uftrace_filter, node);
+	filter = rb_entry(node, struct motrace_filter, node);
 	TEST_STREQ(filter->name, "command_replay");
 	TEST_EQ(filter->start, 0x2000UL);
 	TEST_EQ(filter->end, 0x2000UL + 0x1000UL);
 
 	node = rb_next(node);
-	filter = rb_entry(node, struct uftrace_filter, node);
+	filter = rb_entry(node, struct motrace_filter, node);
 	TEST_STREQ(filter->name, "command_report");
 	TEST_EQ(filter->start, 0x3000UL);
 	TEST_EQ(filter->end, 0x3000UL + 0x1000UL);
@@ -2517,7 +2814,7 @@ TEST_CASE(locfilter_setup_dir_glob)
 	TEST_EQ(rb_next(node), NULL);
 
 	pr_dbg("found 3 symbols. done\n");
-	uftrace_cleanup_triggers(&triggers);
+	motrace_cleanup_triggers(&triggers);
 	TEST_EQ(RB_EMPTY_ROOT(&triggers.root), true);
 
 	return TEST_OK;
@@ -2525,47 +2822,215 @@ TEST_CASE(locfilter_setup_dir_glob)
 
 TEST_CASE(locfilter_match)
 {
-	struct uftrace_sym_info sinfo = {
+	struct motrace_sym_info sinfo = {
 		.loaded = false,
 	};
-	struct uftrace_triggers_info triggers = {
+	struct motrace_triggers_info triggers = {
 		.root = RB_ROOT,
 		.loc_count = 0,
 	};
-	struct uftrace_trigger tr;
-	struct uftrace_filter_setting setting = {
+	struct motrace_trigger tr;
+	struct motrace_filter_setting setting = {
 		.ptype = PATT_REGEX,
 	};
 
 	locfilter_test_load_symtabs(&sinfo);
 
 	pr_dbg("check filter address match with re.* at 0x2000-0x2fff\n");
-	uftrace_setup_filter("re.*", &sinfo, &triggers, &setting);
+	motrace_setup_filter("re.*", &sinfo, &triggers, &setting);
 	TEST_EQ(RB_EMPTY_ROOT(&triggers.root), false);
 	TEST_EQ(get_filter_mode(triggers.filter_count), FILTER_MODE_IN);
 
 	pr_dbg("check addresses inside the symbol\n");
 	memset(&tr, 0, sizeof(tr));
-	TEST_NE(uftrace_match_filter(0x2000, &triggers.root, &tr), NULL);
+	TEST_NE(motrace_match_filter(0x2000, &triggers.root, &tr), NULL);
 	TEST_EQ(tr.flags, TRIGGER_FL_FILTER);
 	TEST_EQ(tr.fmode, FILTER_MODE_IN);
 
 	memset(&tr, 0, sizeof(tr));
-	TEST_NE(uftrace_match_filter(0x2fff, &triggers.root, &tr), NULL);
+	TEST_NE(motrace_match_filter(0x2fff, &triggers.root, &tr), NULL);
 	TEST_EQ(tr.flags, TRIGGER_FL_FILTER);
 	TEST_EQ(tr.fmode, FILTER_MODE_IN);
 
 	pr_dbg("addresses out of the symbol should not have FILTER flags\n");
 	memset(&tr, 0, sizeof(tr));
-	TEST_EQ(uftrace_match_filter(0x1fff, &triggers.root, &tr), NULL);
+	TEST_EQ(motrace_match_filter(0x1fff, &triggers.root, &tr), NULL);
 	TEST_NE(tr.flags, TRIGGER_FL_FILTER);
 
 	memset(&tr, 0, sizeof(tr));
-	TEST_EQ(uftrace_match_filter(0xa000, &triggers.root, &tr), NULL);
+	TEST_EQ(motrace_match_filter(0xa000, &triggers.root, &tr), NULL);
 	TEST_NE(tr.flags, TRIGGER_FL_FILTER);
 
-	uftrace_cleanup_triggers(&triggers);
+	motrace_cleanup_triggers(&triggers);
 	TEST_EQ(RB_EMPTY_ROOT(&triggers.root), true);
+
+	return TEST_OK;
+}
+
+TEST_CASE(filter_setup_cond)
+{
+	struct motrace_trigger tr = {};
+	struct motrace_filter_setting setting = {};
+	char val_str_ok1[] = "foo@filter,if:arg1==1234";
+	char val_str_ok2[] = "foo@filter,if:arg2!=100";
+	char val_str_ok3[] = "foo@filter,if:arg3>=5678";
+	char val_str_ok4[] = "foo@filter,if:arg4<9876";
+	char val_str_ng1[] = "foo@filter,if:name==1234"; /* named arg not supported */
+	char val_str_ng2[] = "foo@filter,if:fparg1==1234"; /* fparg not supported */
+	char val_str_ng3[] = "foo@filter,if:arg1~=1234"; /* op not supported */
+	char val_str_ng4[] = "foo@value,if:arg-1==1234"; /* negative arg index */
+	FILE *null_fp = fopen("/dev/null", "w");
+	FILE *saved_fp = outfp;
+	long v;
+
+	pr_dbg("check filter cond: %s\n", val_str_ok1);
+	TEST_EQ(setup_trigger_action(val_str_ok1, &tr, NULL, 0, &setting), 0);
+	TEST_EQ(tr.cond.idx, 1);
+	TEST_EQ(tr.cond.op, FILTER_OP_EQ);
+	TEST_EQ(tr.cond.off, -1);
+	TEST_EQ(tr.cond.size, (int)sizeof(long));
+	memcpy(&v, tr.cond.val, sizeof(v));
+	TEST_EQ(v, 1234);
+
+	pr_dbg("check filter cond: %s\n", val_str_ok2);
+	TEST_EQ(setup_trigger_action(val_str_ok2, &tr, NULL, 0, &setting), 0);
+	TEST_EQ(tr.cond.idx, 2);
+	TEST_EQ(tr.cond.op, FILTER_OP_NE);
+	TEST_EQ(tr.cond.off, -1);
+	TEST_EQ(tr.cond.size, (int)sizeof(long));
+	memcpy(&v, tr.cond.val, sizeof(v));
+	TEST_EQ(v, 100);
+
+	pr_dbg("check filter cond: %s\n", val_str_ok3);
+	TEST_EQ(setup_trigger_action(val_str_ok3, &tr, NULL, 0, &setting), 0);
+	TEST_EQ(tr.cond.idx, 3);
+	TEST_EQ(tr.cond.op, FILTER_OP_GE);
+	TEST_EQ(tr.cond.off, -1);
+	TEST_EQ(tr.cond.size, (int)sizeof(long));
+	memcpy(&v, tr.cond.val, sizeof(v));
+	TEST_EQ(v, 5678);
+
+	pr_dbg("check filter cond: %s\n", val_str_ok4);
+	TEST_EQ(setup_trigger_action(val_str_ok4, &tr, NULL, 0, &setting), 0);
+	TEST_EQ(tr.cond.idx, 4);
+	TEST_EQ(tr.cond.op, FILTER_OP_LT);
+	TEST_EQ(tr.cond.off, -1);
+	TEST_EQ(tr.cond.size, (int)sizeof(long));
+	memcpy(&v, tr.cond.val, sizeof(v));
+	TEST_EQ(v, 9876);
+
+	free(tr.cond.ptr_off);
+	free(tr.cond.val);
+	memset(&tr.cond, 0, sizeof(tr.cond));
+
+	memset(&tr, 0, sizeof(tr));
+	/* suppress usage error messages */
+	if (!debug)
+		outfp = null_fp;
+
+	TEST_NE(setup_trigger_action(val_str_ng1, &tr, NULL, 0, &setting), 0);
+	TEST_NE(setup_trigger_action(val_str_ng2, &tr, NULL, 0, &setting), 0);
+	TEST_NE(setup_trigger_action(val_str_ng3, &tr, NULL, 0, &setting), 0);
+	TEST_NE(setup_trigger_action(val_str_ng4, &tr, NULL, 0, &setting), 0);
+
+	if (!debug)
+		outfp = saved_fp;
+
+	/* failed function should not set any fields */
+	TEST_EQ(tr.cond.idx, 0);
+	TEST_EQ(tr.cond.op, 0);
+	TEST_EQ(tr.cond.val, NULL);
+
+	fclose(null_fp);
+	return TEST_OK;
+}
+
+TEST_CASE(filter_eval_cond)
+{
+	struct motrace_filter_cond cond = {
+		.off = -1,
+		.size = 8,
+	};
+	int64_t expected;
+	int64_t actual;
+
+	pr_dbg("check filter cond: arg == 1\n");
+	cond.op = FILTER_OP_EQ;
+	expected = 1;
+	cond.val = &expected;
+
+	actual = 1;
+	TEST_EQ(motrace_eval_cond(&cond, &actual), true);
+	actual = 2;
+	TEST_EQ(motrace_eval_cond(&cond, &actual), false);
+
+	pr_dbg("check filter cond: arg == -1\n");
+	cond.op = FILTER_OP_EQ;
+	expected = -1;
+	cond.val = &expected;
+
+	actual = 1;
+	TEST_EQ(motrace_eval_cond(&cond, &actual), false);
+	actual = -1;
+	TEST_EQ(motrace_eval_cond(&cond, &actual), true);
+
+	pr_dbg("check filter cond: arg != 1\n");
+	cond.op = FILTER_OP_NE;
+	expected = 1;
+	cond.val = &expected;
+
+	actual = 1;
+	TEST_EQ(motrace_eval_cond(&cond, &actual), false);
+	actual = 0;
+	TEST_EQ(motrace_eval_cond(&cond, &actual), true);
+
+	pr_dbg("check filter cond: arg > 10\n");
+	cond.op = FILTER_OP_GT;
+	expected = 10;
+	cond.val = &expected;
+
+	actual = 11;
+	TEST_EQ(motrace_eval_cond(&cond, &actual), true);
+	actual = 10;
+	TEST_EQ(motrace_eval_cond(&cond, &actual), false);
+	actual = -1;
+	TEST_EQ(motrace_eval_cond(&cond, &actual), false);
+
+	pr_dbg("check filter cond: arg >= 10\n");
+	cond.op = FILTER_OP_GE;
+	expected = 10;
+	cond.val = &expected;
+
+	actual = 11;
+	TEST_EQ(motrace_eval_cond(&cond, &actual), true);
+	actual = 10;
+	TEST_EQ(motrace_eval_cond(&cond, &actual), true);
+	actual = 9;
+	TEST_EQ(motrace_eval_cond(&cond, &actual), false);
+
+	pr_dbg("check filter cond: arg < 0\n");
+	cond.op = FILTER_OP_LT;
+	expected = 0;
+	cond.val = &expected;
+
+	actual = 1;
+	TEST_EQ(motrace_eval_cond(&cond, &actual), false);
+	actual = 0;
+	TEST_EQ(motrace_eval_cond(&cond, &actual), false);
+	actual = -1;
+	TEST_EQ(motrace_eval_cond(&cond, &actual), true);
+
+	pr_dbg("check filter cond: arg <= 0\n");
+	cond.op = FILTER_OP_LE;
+	expected = 0;
+	cond.val = &expected;
+
+	actual = 1;
+	TEST_EQ(motrace_eval_cond(&cond, &actual), false);
+	actual = 0;
+	TEST_EQ(motrace_eval_cond(&cond, &actual), true);
+	actual = -1;
+	TEST_EQ(motrace_eval_cond(&cond, &actual), true);
 
 	return TEST_OK;
 }

@@ -1,5 +1,5 @@
 /*
- * basic i386 support for uftrace
+ * basic i386 support for motrace
  *
  * Copyright (C) 2017. Hanbum Park <kese111@gmail.com>
  *
@@ -22,7 +22,7 @@
 
 static bool search_main_ret = false;
 
-int mcount_get_register_arg(struct mcount_arg_context *ctx, struct uftrace_arg_spec *spec)
+int mcount_get_register_arg(struct mcount_arg_context *ctx, struct motrace_arg_spec *spec)
 {
 	struct mcount_regs *regs = ctx->regs;
 	int reg_idx;
@@ -75,7 +75,7 @@ int mcount_get_register_arg(struct mcount_arg_context *ctx, struct uftrace_arg_s
 	return 0;
 }
 
-void mcount_get_stack_arg(struct mcount_arg_context *ctx, struct uftrace_arg_spec *spec)
+void mcount_get_stack_arg(struct mcount_arg_context *ctx, struct motrace_arg_spec *spec)
 {
 	int offset;
 	unsigned long *addr = ctx->stack_base;
@@ -112,13 +112,13 @@ void mcount_get_stack_arg(struct mcount_arg_context *ctx, struct uftrace_arg_spe
 	}
 }
 
-void mcount_arch_get_arg(struct mcount_arg_context *ctx, struct uftrace_arg_spec *spec)
+void mcount_arch_get_arg(struct mcount_arg_context *ctx, struct motrace_arg_spec *spec)
 {
 	if (mcount_get_register_arg(ctx, spec) < 0)
 		mcount_get_stack_arg(ctx, spec);
 }
 
-void mcount_arch_get_retval(struct mcount_arg_context *ctx, struct uftrace_arg_spec *spec)
+void mcount_arch_get_retval(struct mcount_arg_context *ctx, struct motrace_arg_spec *spec)
 {
 	/* type of return value cannot be FLOAT, so check format instead */
 	if (spec->fmt != ARG_FMT_FLOAT)
@@ -190,11 +190,11 @@ void mcount_restore_arch_context(struct mcount_arch_context *ctx)
 	we will find it, and we will replace it.
 	GOOD LUCK!
 */
-unsigned long *mcount_arch_parent_location(struct uftrace_sym_info *symtabs,
+unsigned long *mcount_arch_parent_location(struct motrace_sym_info *symtabs,
 					   unsigned long *parent_loc, unsigned long child_ip)
 {
 	if (!search_main_ret) {
-		struct uftrace_symbol *parent_sym, *child_sym;
+		struct motrace_symbol *parent_sym, *child_sym;
 		char *parent_name, *child_name;
 
 		const char *find_main[] = { "__libc_start_main", "main" };

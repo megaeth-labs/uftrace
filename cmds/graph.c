@@ -4,7 +4,7 @@
 #include <stdio_ext.h>
 #include <stdlib.h>
 
-#include "uftrace.h"
+#include "motrace.h"
 #include "utils/field.h"
 #include "utils/filter.h"
 #include "utils/fstack.h"
@@ -24,7 +24,7 @@ struct graph_backtrace {
 };
 
 struct session_graph {
-	struct uftrace_graph ug;
+	struct motrace_graph ug;
 	struct graph_backtrace *bt_curr;
 	struct list_head bt_list;
 	struct session_graph *next;
@@ -32,7 +32,7 @@ struct session_graph {
 };
 
 struct task_graph {
-	struct uftrace_task_graph utg;
+	struct motrace_task_graph utg;
 	struct graph_backtrace *bt_curr;
 	int enabled;
 };
@@ -42,7 +42,7 @@ static struct session_graph *graph_list = NULL;
 
 static void print_total_time(struct field_data *fd)
 {
-	struct uftrace_graph_node *node = fd->arg;
+	struct motrace_graph_node *node = fd->arg;
 	uint64_t d;
 
 	d = node->time;
@@ -52,7 +52,7 @@ static void print_total_time(struct field_data *fd)
 
 static void print_self_time(struct field_data *fd)
 {
-	struct uftrace_graph_node *node = fd->arg;
+	struct motrace_graph_node *node = fd->arg;
 	uint64_t d;
 
 	d = node->time - node->child_time;
@@ -60,11 +60,40 @@ static void print_self_time(struct field_data *fd)
 	print_time_unit(d);
 }
 
+static void print_offcpu_time(struct field_data *fd)
+{
+	struct motrace_graph_node *node = fd->arg;
+	uint64_t d = 0;
+
+	if (node->time > node->cpu_time)
+		d = node->time - node->cpu_time;
+
+	print_time_unit(d);
+}
+
+static void print_offcpu_self_time(struct field_data *fd)
+{
+	struct motrace_graph_node *node = fd->arg;
+	uint64_t wall_self = 0;
+	uint64_t cpu_self = 0;
+	uint64_t d = 0;
+
+	if (node->time > node->child_time)
+		wall_self = node->time - node->child_time;
+	if (node->cpu_time > node->child_cpu_time)
+		cpu_self = node->cpu_time - node->child_cpu_time;
+
+	if (wall_self > cpu_self)
+		d = wall_self - cpu_self;
+
+	print_time_unit(d);
+}
+
 static void print_addr(struct field_data *fd)
 {
-	struct uftrace_graph_node *node = fd->arg;
+	struct motrace_graph_node *node = fd->arg;
 
-	/* uftrace records (truncated) 48-bit addresses */
+	/* motrace records (truncated) 48-bit addresses */
 	int width = sizeof(long) == 4 ? 8 : 12;
 
 	pr_out("%*" PRIx64, width, effective_addr(node->addr));
@@ -90,6 +119,26 @@ static struct display_field field_self_time = {
 	.list = LIST_HEAD_INIT(field_self_time.list),
 };
 
+static struct display_field field_offcpu_time = {
+	.id = GRAPH_F_OFFCPU_TIME,
+	.name = "offcpu-time",
+	.alias = "offcpu",
+	.header = "    OFFCPU",
+	.length = 10,
+	.print = print_offcpu_time,
+	.list = LIST_HEAD_INIT(field_offcpu_time.list),
+};
+
+static struct display_field field_offcpu_self_time = {
+	.id = GRAPH_F_OFFCPU_SELF_TIME,
+	.name = "offcpu-self-time",
+	.alias = "offcpu-self",
+	.header = "OFFCPU SELF",
+	.length = 10,
+	.print = print_offcpu_self_time,
+	.list = LIST_HEAD_INIT(field_offcpu_self_time.list),
+};
+
 static struct display_field field_addr = {
 	.id = GRAPH_F_ADDR,
 	.name = "address",
@@ -107,7 +156,7 @@ static struct display_field field_addr = {
 
 static void print_task_total_time(struct field_data *fd)
 {
-	struct uftrace_task *node = fd->arg;
+	struct motrace_task *node = fd->arg;
 	uint64_t d;
 
 	d = node->time.run;
@@ -117,7 +166,7 @@ static void print_task_total_time(struct field_data *fd)
 
 static void print_task_self_time(struct field_data *fd)
 {
-	struct uftrace_task *node = fd->arg;
+	struct motrace_task *node = fd->arg;
 	uint64_t d;
 
 	d = node->time.run - node->time.idle;
@@ -127,7 +176,7 @@ static void print_task_self_time(struct field_data *fd)
 
 static void print_task_tid(struct field_data *fd)
 {
-	struct uftrace_task *task = fd->arg;
+	struct motrace_task *task = fd->arg;
 	pr_out("[%*d]", TASK_ID_LEN, task->tid);
 }
 
@@ -164,6 +213,8 @@ static struct display_field field_task_tid = {
 static struct display_field *field_table[] = {
 	&field_total_time,
 	&field_self_time,
+	&field_offcpu_time,
+	&field_offcpu_self_time,
 	&field_addr,
 };
 
@@ -174,13 +225,13 @@ static struct display_field *field_task_table[] = {
 	&field_task_tid,
 };
 
-static void setup_default_field(struct list_head *fields, struct uftrace_opts *opts,
+static void setup_default_field(struct list_head *fields, struct motrace_opts *opts,
 				struct display_field *p_field_table[])
 {
 	add_field(fields, field_table[GRAPH_F_TOTAL_TIME]);
 }
 
-static void setup_default_task_field(struct list_head *fields, struct uftrace_opts *opts,
+static void setup_default_task_field(struct list_head *fields, struct motrace_opts *opts,
 				     struct display_field *p_field_table[])
 {
 	add_field(fields, field_task_table[GRAPH_F_TASK_TOTAL_TIME]);
@@ -188,7 +239,7 @@ static void setup_default_task_field(struct list_head *fields, struct uftrace_op
 	add_field(fields, field_task_table[GRAPH_F_TASK_TID]);
 }
 
-static void print_field(struct uftrace_graph_node *node)
+static void print_field(struct motrace_graph_node *node)
 {
 	struct field_data fd = {
 		.arg = node,
@@ -198,7 +249,7 @@ static void print_field(struct uftrace_graph_node *node)
 		pr_out(" : ");
 }
 
-static void print_task_field(struct uftrace_task *node)
+static void print_task_field(struct motrace_task *node)
 {
 	struct field_data fd = {
 		.arg = node,
@@ -208,13 +259,13 @@ static void print_task_field(struct uftrace_task *node)
 		pr_out(" : ");
 }
 
-static int create_graph(struct uftrace_session *sess, void *func)
+static int create_graph(struct motrace_session *sess, void *func)
 {
 	struct session_graph *graph = xzalloc(sizeof(*graph));
 
 	pr_dbg("create graph for session %.*s (%s)\n", SESSION_ID_LEN, sess->sid, sess->exename);
 
-	graph->func = xstrdup(full_graph ? uftrace_basename(sess->exename) : func);
+	graph->func = xstrdup(full_graph ? motrace_basename(sess->exename) : func);
 	INIT_LIST_HEAD(&graph->bt_list);
 
 	graph_init(&graph->ug, sess);
@@ -226,7 +277,7 @@ static int create_graph(struct uftrace_session *sess, void *func)
 	return 0;
 }
 
-static void setup_graph_list(struct uftrace_data *handle, struct uftrace_opts *opts, char *func)
+static void setup_graph_list(struct motrace_data *handle, struct motrace_opts *opts, char *func)
 {
 	struct session_graph *graph;
 
@@ -239,16 +290,16 @@ static void setup_graph_list(struct uftrace_data *handle, struct uftrace_opts *o
 	}
 }
 
-static struct uftrace_graph *get_graph(struct uftrace_task_reader *task, uint64_t time,
+static struct motrace_graph *get_graph(struct motrace_task_reader *task, uint64_t time,
 				       uint64_t addr)
 {
 	struct session_graph *graph;
-	struct uftrace_session_link *sessions = &task->h->sessions;
-	struct uftrace_session *sess;
+	struct motrace_session_link *sessions = &task->h->sessions;
+	struct motrace_session *sess;
 
 	sess = find_task_session(sessions, task->t, time);
 	if (sess == NULL) {
-		struct uftrace_session *fsess = sessions->first;
+		struct motrace_session *fsess = sessions->first;
 
 		if (is_kernel_address(&fsess->sym_info, addr))
 			sess = fsess;
@@ -268,11 +319,11 @@ static struct uftrace_graph *get_graph(struct uftrace_task_reader *task, uint64_
 
 static int start_graph(struct task_graph *tg);
 
-static struct task_graph *get_task_graph(struct uftrace_task_reader *task, uint64_t time,
+static struct task_graph *get_task_graph(struct motrace_task_reader *task, uint64_t time,
 					 uint64_t addr)
 {
 	struct task_graph *tg;
-	struct uftrace_graph *graph;
+	struct motrace_graph *graph;
 
 	tg = (struct task_graph *)graph_get_task(task, sizeof(*tg));
 
@@ -295,7 +346,7 @@ static int save_backtrace_addr(struct task_graph *tg)
 	int i;
 	int skip = 0;
 	struct graph_backtrace *bt;
-	struct uftrace_task_reader *task = tg->utg.task;
+	struct motrace_task_reader *task = tg->utg.task;
 	struct session_graph *graph = (struct session_graph *)tg->utg.graph;
 	int len = task->stack_count;
 	uint64_t addrs[len];
@@ -309,7 +360,7 @@ static int save_backtrace_addr(struct task_graph *tg)
 		return 0;
 
 	for (i = len - 1; i >= 0; i--) {
-		struct uftrace_fstack *fstack = fstack_get(task, i + skip);
+		struct motrace_fstack *fstack = fstack_get(task, i + skip);
 
 		if (fstack != NULL)
 			addrs[i] = fstack->addr;
@@ -340,8 +391,8 @@ found:
 
 static void save_backtrace_time(struct task_graph *tg)
 {
-	struct uftrace_task_reader *task = tg->utg.task;
-	struct uftrace_fstack *fstack = fstack_get(task, task->stack_count);
+	struct motrace_task_reader *task = tg->utg.task;
+	struct motrace_fstack *fstack = fstack_get(task, task->stack_count);
 
 	if (tg->bt_curr != NULL && fstack != NULL)
 		tg->bt_curr->time += fstack->total_time;
@@ -353,7 +404,7 @@ static int print_backtrace(struct session_graph *graph)
 {
 	int i = 0, k;
 	struct graph_backtrace *bt;
-	struct uftrace_symbol *sym;
+	struct motrace_symbol *sym;
 	char *symname;
 
 	list_for_each_entry(bt, &graph->bt_list, list) {
@@ -432,12 +483,12 @@ static void pr_indent(bool *indent_mask, int indent, bool line)
 	}
 }
 
-static void print_graph_node(struct uftrace_graph *graph, struct uftrace_graph_node *node,
+static void print_graph_node(struct motrace_graph *graph, struct motrace_graph_node *node,
 			     bool *indent_mask, int indent, bool needs_line)
 {
 	char *symname = node->name;
-	struct uftrace_graph_node *parent = node->parent;
-	struct uftrace_graph_node *child;
+	struct motrace_graph_node *parent = node->parent;
+	struct motrace_graph_node *child;
 	int orig_indent = indent;
 
 	/* XXX: what if it clashes with existing function address */
@@ -484,7 +535,7 @@ static void print_graph_node(struct uftrace_graph *graph, struct uftrace_graph_n
 	pr_dbg2("del mask (%d) for %s\n", orig_indent, symname);
 }
 
-static int print_graph(struct session_graph *graph, struct uftrace_opts *opts)
+static int print_graph(struct session_graph *graph, struct motrace_opts *opts)
 {
 	bool *indent_mask;
 
@@ -521,13 +572,13 @@ static int print_graph(struct session_graph *graph, struct uftrace_opts *opts)
 	return 1;
 }
 
-static void build_graph_node(struct uftrace_opts *opts, struct uftrace_task_reader *task,
+static void build_graph_node(struct motrace_opts *opts, struct motrace_task_reader *task,
 			     uint64_t time, uint64_t addr, int type, char *func)
 {
 	struct task_graph *tg;
-	struct uftrace_symbol *sym = NULL;
+	struct motrace_symbol *sym = NULL;
 	char *name;
-	struct uftrace_dbg_loc *loc = NULL;
+	struct motrace_dbg_loc *loc = NULL;
 
 	tg = get_task_graph(task, time, addr);
 	if (unlikely(tg->utg.graph == NULL))
@@ -548,21 +599,21 @@ static void build_graph_node(struct uftrace_opts *opts, struct uftrace_task_read
 			loc = task_find_loc_addr(&task->h->sessions, task, time, addr);
 		}
 
-		graph_add_node(&tg->utg, type, name, sizeof(struct uftrace_graph_node), loc);
+		graph_add_node(&tg->utg, type, name, sizeof(struct motrace_graph_node), loc);
 	}
 
 	/* cannot find a session for this record */
 	if (tg->utg.graph == NULL)
 		goto out;
-	if (type == UFTRACE_EVENT)
+	if (type == MOTRACE_EVENT)
 		goto out;
 	if (full_graph)
 		goto out;
 
 	if (!strcmp(name, func)) {
-		if (type == UFTRACE_ENTRY)
+		if (type == MOTRACE_ENTRY)
 			start_graph(tg);
-		else if (type == UFTRACE_EXIT)
+		else if (type == MOTRACE_EXIT)
 			end_graph(tg);
 	}
 
@@ -570,17 +621,17 @@ out:
 	symbol_putname(sym, name);
 }
 
-static void build_graph(struct uftrace_opts *opts, struct uftrace_data *handle, char *func)
+static void build_graph(struct motrace_opts *opts, struct motrace_data *handle, char *func)
 {
-	struct uftrace_task_reader *task;
+	struct motrace_task_reader *task;
 	struct session_graph *graph;
 	uint64_t prev_time = 0;
 	int i;
 
 	setup_graph_list(handle, opts, func);
 
-	while (!read_rstack(handle, &task) && !uftrace_done) {
-		struct uftrace_record *frs = task->rstack;
+	while (!read_rstack(handle, &task) && !motrace_done) {
+		struct motrace_record *frs = task->rstack;
 		uint64_t addr = frs->addr;
 
 		if (!fstack_check_opts(task, opts))
@@ -589,7 +640,7 @@ static void build_graph(struct uftrace_opts *opts, struct uftrace_data *handle, 
 		if (!fstack_check_filter(task))
 			continue;
 
-		if (frs->type == UFTRACE_EVENT) {
+		if (frs->type == MOTRACE_EVENT) {
 			if (frs->addr != EVENT_ID_PERF_SCHED_IN &&
 			    frs->addr != EVENT_ID_PERF_SCHED_OUT &&
 			    frs->addr != EVENT_ID_PERF_SCHED_OUT_PREEMPT)
@@ -597,15 +648,15 @@ static void build_graph(struct uftrace_opts *opts, struct uftrace_data *handle, 
 		}
 
 		if (is_kernel_record(task, frs)) {
-			struct uftrace_session *fsess;
+			struct motrace_session *fsess;
 
 			fsess = task->h->sessions.first;
 			addr = get_kernel_address(&fsess->sym_info, addr);
 		}
 
-		if (frs->type == UFTRACE_LOST) {
+		if (frs->type == MOTRACE_LOST) {
 			struct task_graph *tg;
-			struct uftrace_session *fsess;
+			struct motrace_session *fsess;
 
 			if (opts->kernel_skip_out && !task->user_stack_count)
 				continue;
@@ -614,14 +665,14 @@ static void build_graph(struct uftrace_opts *opts, struct uftrace_data *handle, 
 
 			/* add partial duration of kernel functions before LOST */
 			while (task->stack_count >= task->user_stack_count) {
-				struct uftrace_fstack *fstack;
+				struct motrace_fstack *fstack;
 
 				fstack = fstack_get(task, task->stack_count);
 
 				if (fstack_enabled && fstack && fstack->valid &&
 				    !(fstack->flags & FSTACK_FL_NORECORD)) {
 					build_graph_node(opts, task, prev_time, fstack->addr,
-							 UFTRACE_EXIT, func);
+							 MOTRACE_EXIT, func);
 				}
 
 				fstack_exit(task);
@@ -652,7 +703,7 @@ static void build_graph(struct uftrace_opts *opts, struct uftrace_data *handle, 
 	/* add duration of remaining functions */
 	for (i = 0; i < handle->nr_tasks; i++) {
 		uint64_t last_time;
-		struct uftrace_fstack *fstack;
+		struct motrace_fstack *fstack;
 
 		task = &handle->tasks[i];
 
@@ -682,17 +733,17 @@ static void build_graph(struct uftrace_opts *opts, struct uftrace_data *handle, 
 			if (task->stack_count > 0)
 				fstack[-1].child_time += fstack->total_time;
 
-			build_graph_node(opts, task, last_time, fstack->addr, UFTRACE_EXIT, func);
+			build_graph_node(opts, task, last_time, fstack->addr, MOTRACE_EXIT, func);
 		}
 	}
 
-	if (!full_graph || uftrace_done)
+	if (!full_graph || motrace_done)
 		return;
 
 	/* account execution time of each graph */
 	graph = graph_list;
 	while (graph) {
-		struct uftrace_graph_node *node;
+		struct motrace_graph_node *node;
 
 		list_for_each_entry(node, &graph->ug.root.head, list) {
 			graph->ug.root.time += node->time;
@@ -708,11 +759,11 @@ struct find_func_data {
 	bool found;
 };
 
-static int find_func(struct uftrace_session *s, void *arg)
+static int find_func(struct motrace_session *s, void *arg)
 {
 	struct find_func_data *data = arg;
-	struct uftrace_sym_info *sinfo = &s->sym_info;
-	struct uftrace_mmap *map;
+	struct motrace_sym_info *sinfo = &s->sym_info;
+	struct motrace_mmap *map;
 
 	for_each_map(sinfo, map) {
 		if (map->mod == NULL)
@@ -727,7 +778,7 @@ static int find_func(struct uftrace_session *s, void *arg)
 	return data->found;
 }
 
-static void synthesize_depth_trigger(struct uftrace_opts *opts, struct uftrace_data *handle,
+static void synthesize_depth_trigger(struct motrace_opts *opts, struct motrace_data *handle,
 				     char *func)
 {
 	size_t old_len = opts->trigger ? strlen(opts->trigger) : 0;
@@ -743,13 +794,13 @@ static void synthesize_depth_trigger(struct uftrace_opts *opts, struct uftrace_d
 		 ffd.found ? "" : "kernel,", opts->depth);
 }
 
-static void reset_task_runtime(struct uftrace_data *handle)
+static void reset_task_runtime(struct motrace_data *handle)
 {
-	struct uftrace_task *t;
+	struct motrace_task *t;
 	struct rb_node *n = rb_first(&handle->sessions.tasks);
 
 	while (n != NULL) {
-		t = rb_entry(n, struct uftrace_task, node);
+		t = rb_entry(n, struct motrace_task, node);
 		n = rb_next(n);
 
 		t->time.run = 0;
@@ -758,10 +809,10 @@ static void reset_task_runtime(struct uftrace_data *handle)
 	}
 }
 
-static void graph_build_task(struct uftrace_opts *opts, struct uftrace_data *handle)
+static void graph_build_task(struct motrace_opts *opts, struct motrace_data *handle)
 {
-	struct uftrace_task_reader *task;
-	struct uftrace_task *t;
+	struct motrace_task_reader *task;
+	struct motrace_task *t;
 	int i;
 
 	/*
@@ -771,8 +822,8 @@ static void graph_build_task(struct uftrace_opts *opts, struct uftrace_data *han
 	handle->time_filter = 0;
 	reset_task_runtime(handle);
 
-	while (!read_rstack(handle, &task) && !uftrace_done) {
-		struct uftrace_record *frs = task->rstack;
+	while (!read_rstack(handle, &task) && !motrace_done) {
+		struct motrace_record *frs = task->rstack;
 
 		if (!fstack_check_opts(task, opts))
 			continue;
@@ -786,7 +837,7 @@ static void graph_build_task(struct uftrace_opts *opts, struct uftrace_data *han
 
 		t = task->t;
 
-		if (frs->type == UFTRACE_EVENT) {
+		if (frs->type == MOTRACE_EVENT) {
 			switch (frs->addr) {
 			case EVENT_ID_PERF_SCHED_OUT:
 			case EVENT_ID_PERF_SCHED_OUT_PREEMPT:
@@ -818,9 +869,9 @@ static void graph_build_task(struct uftrace_opts *opts, struct uftrace_data *han
 }
 
 /* returns true if any of child has more runtime than the filter */
-static bool check_time_filter(struct uftrace_task *task, struct uftrace_opts *opts)
+static bool check_time_filter(struct motrace_task *task, struct motrace_opts *opts)
 {
-	struct uftrace_task *child;
+	struct motrace_task *child;
 
 	list_for_each_entry(child, &task->children, siblings) {
 		if (child->time.run >= opts->threshold)
@@ -831,8 +882,8 @@ static bool check_time_filter(struct uftrace_task *task, struct uftrace_opts *op
 	return false;
 }
 
-static bool is_last_child(struct uftrace_task *task, struct uftrace_task *parent,
-			  struct uftrace_opts *opts)
+static bool is_last_child(struct motrace_task *task, struct motrace_task *parent,
+			  struct motrace_opts *opts)
 {
 	if (list_is_singular(&parent->children) || parent->children.prev == &task->siblings)
 		return true;
@@ -845,15 +896,15 @@ static bool is_last_child(struct uftrace_task *task, struct uftrace_task *parent
 	return true;
 }
 
-static bool print_task_node(struct uftrace_task *task, struct uftrace_task *parent,
-			    bool *indent_mask, int indent, struct uftrace_opts *opts)
+static bool print_task_node(struct motrace_task *task, struct motrace_task *parent,
+			    bool *indent_mask, int indent, struct motrace_opts *opts)
 {
 	char *name = task->comm;
-	struct uftrace_task *child;
+	struct motrace_task *child;
 	int orig_indent = indent;
 	bool blank = false;
 
-	if (uftrace_done)
+	if (motrace_done)
 		return false;
 
 	print_task_field(task);
@@ -920,12 +971,12 @@ static bool print_task_node(struct uftrace_task *task, struct uftrace_task *pare
 	return blank;
 }
 
-static int graph_print_task(struct uftrace_data *handle, struct uftrace_opts *opts)
+static int graph_print_task(struct motrace_data *handle, struct motrace_opts *opts)
 {
 	bool *indent_mask;
-	struct uftrace_task *task;
+	struct motrace_task *task;
 
-	if (uftrace_done)
+	if (motrace_done)
 		return 0;
 
 	if (handle->nr_tasks <= 0)
@@ -950,10 +1001,10 @@ static int graph_print_task(struct uftrace_data *handle, struct uftrace_opts *op
 	return 1;
 }
 
-int command_graph(int argc, char *argv[], struct uftrace_opts *opts)
+int command_graph(int argc, char *argv[], struct motrace_opts *opts)
 {
 	int ret;
-	struct uftrace_data handle;
+	struct motrace_data handle;
 	struct session_graph *graph;
 	char *func;
 	struct graph_backtrace *bt, *btmp;
@@ -973,6 +1024,9 @@ int command_graph(int argc, char *argv[], struct uftrace_opts *opts)
 		pr_warn("cannot open record data: %s: %m\n", opts->dirname);
 		return -1;
 	}
+
+	if (!opts->show_task && opts->fields == NULL && (handle.hdr.feat_mask & OFFCPU))
+		opts->fields = "+offcpu";
 
 	if (opts->depth != OPT_DEPTH_DEFAULT) {
 		/*
@@ -997,13 +1051,13 @@ int command_graph(int argc, char *argv[], struct uftrace_opts *opts)
 	build_graph(opts, &handle, func);
 
 	graph = graph_list;
-	while (graph && !uftrace_done) {
+	while (graph && !motrace_done) {
 		ret += print_graph(graph, opts);
 		graph = graph->next;
 	}
 
-	if (!ret && !uftrace_done) {
-		pr_out("uftrace: cannot find graph for '%s'\n", func);
+	if (!ret && !motrace_done) {
+		pr_out("motrace: cannot find graph for '%s'\n", func);
 		if (opts_has_filter(opts))
 			pr_out("\t please check your filter settings.\n");
 	}
@@ -1034,13 +1088,13 @@ out:
 #ifdef UNIT_TEST
 TEST_CASE(graph_command)
 {
-	struct uftrace_opts opts = {
+	struct motrace_opts opts = {
 		.dirname = "graph-cmd-test",
 		.exename = read_exename(),
 		.max_stack = 10,
 		.depth = OPT_DEPTH_DEFAULT,
 	};
-	struct uftrace_data handle;
+	struct motrace_data handle;
 	struct session_graph *graph;
 	struct graph_backtrace *bt, *btmp;
 	char *func;
@@ -1055,7 +1109,7 @@ TEST_CASE(graph_command)
 	build_graph(&opts, &handle, func);
 
 	graph = graph_list;
-	while (graph && !uftrace_done) {
+	while (graph && !motrace_done) {
 		pr_dbg("print graph for %s\n", graph->func);
 		ret += print_graph(graph, &opts);
 		graph = graph->next;

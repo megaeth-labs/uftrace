@@ -16,7 +16,7 @@
 /*
  *  ELF File Header validation logic.
  */
-int elf_validate(struct uftrace_elf_data *elf)
+int elf_validate(struct motrace_elf_data *elf)
 {
 	Elf_Ehdr *ehdr;
 	int eclass, data, version;
@@ -80,7 +80,7 @@ int elf_validate(struct uftrace_elf_data *elf)
 	return 0;
 }
 
-int elf_init(const char *filename, struct uftrace_elf_data *elf)
+int elf_init(const char *filename, struct motrace_elf_data *elf)
 {
 	struct stat stbuf;
 
@@ -116,7 +116,7 @@ err:
 	return -1;
 }
 
-void elf_finish(struct uftrace_elf_data *elf)
+void elf_finish(struct motrace_elf_data *elf)
 {
 	if (elf->fd < 0)
 		return;
@@ -128,7 +128,7 @@ void elf_finish(struct uftrace_elf_data *elf)
 	elf->fd = -1;
 }
 
-void elf_get_strtab(struct uftrace_elf_data *elf, struct uftrace_elf_iter *iter, int shidx)
+void elf_get_strtab(struct motrace_elf_data *elf, struct motrace_elf_iter *iter, int shidx)
 {
 	if (elf->has_shdr) {
 		Elf_Shdr *shdr = elf->file_map + elf->ehdr.e_shoff;
@@ -136,13 +136,13 @@ void elf_get_strtab(struct uftrace_elf_data *elf, struct uftrace_elf_iter *iter,
 	}
 }
 
-void elf_get_secdata(struct uftrace_elf_data *elf, struct uftrace_elf_iter *iter)
+void elf_get_secdata(struct motrace_elf_data *elf, struct motrace_elf_iter *iter)
 {
 	iter->ent_size = iter->shdr.sh_entsize;
 	iter->data = elf->file_map + iter->shdr.sh_offset;
 }
 
-void elf_read_secdata(struct uftrace_elf_data *elf, struct uftrace_elf_iter *iter, unsigned offset,
+void elf_read_secdata(struct motrace_elf_data *elf, struct motrace_elf_iter *iter, unsigned offset,
 		      void *buf, size_t len)
 {
 	memcpy(buf, &iter->data[offset], len);
@@ -152,8 +152,8 @@ void elf_read_secdata(struct uftrace_elf_data *elf, struct uftrace_elf_iter *ite
 
 TEST_CASE(rawelf_validate)
 {
-	struct uftrace_elf_data elf;
-	struct uftrace_elf_iter iter;
+	struct motrace_elf_data elf;
+	struct motrace_elf_iter iter;
 	Elf_Ehdr *ehdr;
 	unsigned int count;
 

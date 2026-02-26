@@ -1,7 +1,7 @@
 #!/bin/bash
 
 MISCDIR=$(dirname "$0")
-UFTRACE="${MISCDIR}/../uftrace --libmcount-path=${MISCDIR}/../libmcount"
+MOTRACE="${MISCDIR}/../motrace --libmcount-path=${MISCDIR}/../libmcount"
 UOPTS=
 PROG="${MISCDIR}/bench"
 DATA=bench.data
@@ -21,7 +21,7 @@ function help() {
   echo "Usage: bench.sh [OPTION]"
   echo "  OPTION  -c N      Use CPU N during the benchmark. (default: 3)"
   echo "          -p PROG   Use program PROG. (default: ./bench)"
-  echo "          -u UOPT   Use uftrace option UOPT. Please quote it."
+  echo "          -u UOPT   Use motrace option UOPT. Please quote it."
   echo "          -v        Show verbose messages."
   echo "          -h        Show this help and exit."
 
@@ -72,7 +72,7 @@ ARGS=$*
 TARGET="${PROG} ${ARGS}"
 TASKSET="taskset -c ${CPU}"
 
-echo "# uftrace bench"
+echo "# motrace bench"
 
 # this will set $ORIG_GOV
 set_cpufreq "performance"
@@ -83,9 +83,9 @@ if [ "${ORIG_GOV}" == "" ]; then
   TASKSET=
 fi
 
-msg "running uftrace record ${UOPTS} with ${TARGET}"
-${TASKSET} ${UFTRACE} record -d ${DATA} ${UOPTS} ${TARGET}
-${UFTRACE} report -d ${DATA} -F 'leaf' -F '^nested' --no-sched -f self-avg,self-min -s func
+msg "running motrace record ${UOPTS} with ${TARGET}"
+${TASKSET} ${MOTRACE} record -d ${DATA} ${UOPTS} ${TARGET}
+${MOTRACE} report -d ${DATA} -F 'leaf' -F '^nested' --no-sched -f self-avg,self-min -s func
 
 set_cpufreq "${ORIG_GOV}"
 

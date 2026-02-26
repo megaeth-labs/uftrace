@@ -228,15 +228,15 @@ static void analyze_mcount_instructions(unsigned short *insn, struct lr_offset *
 }
 
 /* This code is only meaningful on THUMB2 mode: @loc = $sp + 4 */
-unsigned long *mcount_arch_parent_location(struct uftrace_sym_info *symtabs,
+unsigned long *mcount_arch_parent_location(struct motrace_sym_info *symtabs,
 					   unsigned long *parent_loc, unsigned long child_ip)
 {
-	struct uftrace_symbol *sym;
+	struct motrace_symbol *sym;
 	unsigned short buf[MAX_ANALYSIS_COUNT];
 	struct lr_offset lr = {
 		.offset = 0,
 	};
-	struct uftrace_mmap *map;
+	struct motrace_mmap *map;
 	uint64_t map_start_addr = 0;
 	uint64_t load_addr;
 
@@ -286,7 +286,7 @@ void check_float_abi(void)
 	dl_iterate_phdr(check_float_abi_cb, NULL);
 }
 
-int mcount_get_register_arg(struct mcount_arg_context *ctx, struct uftrace_arg_spec *spec)
+int mcount_get_register_arg(struct mcount_arg_context *ctx, struct motrace_arg_spec *spec)
 {
 	struct mcount_regs *regs = ctx->regs;
 	int reg_idx;
@@ -414,7 +414,7 @@ int mcount_get_register_arg(struct mcount_arg_context *ctx, struct uftrace_arg_s
 	return 0;
 }
 
-void mcount_get_stack_arg(struct mcount_arg_context *ctx, struct uftrace_arg_spec *spec)
+void mcount_get_stack_arg(struct mcount_arg_context *ctx, struct motrace_arg_spec *spec)
 {
 	int offset = 1;
 	unsigned long *addr = ctx->stack_base;
@@ -460,7 +460,7 @@ void mcount_get_stack_arg(struct mcount_arg_context *ctx, struct uftrace_arg_spe
 	}
 }
 
-void mcount_arch_get_arg(struct mcount_arg_context *ctx, struct uftrace_arg_spec *spec)
+void mcount_arch_get_arg(struct mcount_arg_context *ctx, struct motrace_arg_spec *spec)
 {
 	if (!float_abi_checked)
 		check_float_abi();
@@ -473,7 +473,7 @@ void mcount_arch_get_arg(struct mcount_arg_context *ctx, struct uftrace_arg_spec
 		mcount_get_stack_arg(ctx, spec);
 }
 
-void mcount_arch_get_retval(struct mcount_arg_context *ctx, struct uftrace_arg_spec *spec)
+void mcount_arch_get_retval(struct mcount_arg_context *ctx, struct motrace_arg_spec *spec)
 {
 	if (!float_abi_checked)
 		check_float_abi();

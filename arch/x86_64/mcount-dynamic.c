@@ -1,3 +1,5 @@
+#include <limits.h>
+#include <stdio.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <unistd.h>
@@ -23,36 +25,389 @@ static const unsigned char patchable_clang_nop[] = { 0x0f, 0x1f, 0x44, 0x00, 0x0
 
 static const unsigned char endbr64[] = { 0xf3, 0x0f, 0x1e, 0xfa };
 
+static const unsigned char mo_return_nop[] = {
+	0x2e, 0x66, 0x0f, 0x1f, 0x84, 00, 00, 0x02, 00, 00,
+};
+
+static const unsigned char nop5[] = {
+	0x0f, 0x1f, 0x44, 0x00, 0x00,
+};
+
+static const unsigned char nop6[] = {
+	0x66, 0x0f, 0x1f, 0x44, 0x00, 0x00,
+};
+
+static const unsigned char nop11[] = { 0x66, 0x0f, 0x1f, 0x84, 0x00, 0x00,
+				       0x00, 0x00, 0x00, 0x66, 0x90 };
+
+static unsigned long align_down(unsigned long val, unsigned long align)
+{
+	return val & ~(align - 1);
+}
+
+static unsigned long find_trampoline_page(unsigned long text_addr, unsigned long text_end)
+{
+	unsigned long low, high, prefer;
+	unsigned long prev_end = 0;
+	unsigned long candidate_before = 0;
+	unsigned long candidate_after = 0;
+	FILE *fp;
+	char line[512];
+
+	if (text_end > (unsigned long)INT32_MAX)
+		low = text_end - (unsigned long)INT32_MAX;
+	else
+		low = 0;
+
+	if (text_addr > ULONG_MAX - (unsigned long)INT32_MAX)
+		high = ULONG_MAX;
+	else
+		high = text_addr + (unsigned long)INT32_MAX;
+
+	if (low > high)
+		return 0;
+
+	prefer = ALIGN(text_end, PAGE_SIZE);
+	if (prefer < low)
+		prefer = low;
+
+	fp = fopen("/proc/self/maps", "r");
+	if (fp == NULL)
+		return 0;
+
+	while (fgets(line, sizeof(line), fp)) {
+		unsigned long start, end;
+
+		if (sscanf(line, "%lx-%lx", &start, &end) != 2)
+			continue;
+
+		if (start > prev_end) {
+			unsigned long gap_start = prev_end;
+			unsigned long gap_end = start;
+			unsigned long gap_low = gap_start > low ? gap_start : low;
+			unsigned long gap_high = gap_end < high ? gap_end : high;
+
+			if (gap_high > gap_low && gap_high - gap_low >= PAGE_SIZE) {
+				if (prefer >= gap_low && prefer + PAGE_SIZE <= gap_high) {
+					candidate_after = prefer;
+					break;
+				}
+				if (gap_low > prefer) {
+					unsigned long page = ALIGN(gap_low, PAGE_SIZE);
+
+					if (page + PAGE_SIZE <= gap_high) {
+						candidate_after = page;
+						break;
+					}
+				}
+				else {
+					unsigned long page = align_down(gap_high - PAGE_SIZE,
+								       PAGE_SIZE);
+
+					if (page >= gap_low)
+						candidate_before = page;
+				}
+			}
+		}
+
+		if (end > prev_end)
+			prev_end = end;
+	}
+
+	if (!candidate_after) {
+		unsigned long gap_start = prev_end;
+		unsigned long gap_end = high;
+		unsigned long gap_low = gap_start > low ? gap_start : low;
+		unsigned long gap_high = gap_end;
+
+		if (gap_high > gap_low && gap_high - gap_low >= PAGE_SIZE) {
+			if (prefer >= gap_low && prefer + PAGE_SIZE <= gap_high) {
+				candidate_after = prefer;
+			}
+			else if (gap_low > prefer) {
+				unsigned long page = ALIGN(gap_low, PAGE_SIZE);
+
+				if (page + PAGE_SIZE <= gap_high)
+					candidate_after = page;
+			}
+			else {
+				unsigned long page = align_down(gap_high - PAGE_SIZE, PAGE_SIZE);
+
+				if (page >= gap_low)
+					candidate_before = page;
+			}
+		}
+	}
+
+	fclose(fp);
+
+	if (candidate_after)
+		return candidate_after;
+	return candidate_before;
+}
+
+static const unsigned char xray_entry_disabled[] = { 0xeb, 0x09 };
+static const unsigned char xray_exit_disabled[] = { 0xc3, 0x2e };
+static const unsigned char xray_sled_pad[] = { 0x66, 0x0f, 0x1f, 0x84, 0x00,
+					       0x00, 0x02, 0x00, 0x00 };
+static const unsigned char xray_nop4[] = { 0x0f, 0x1f, 0x40, 0x00 };
+static const unsigned char xray_nop3[] = { 0x0f, 0x1f, 0x00 };
+
+static inline void xray_atomic_store2(void *addr, uint16_t value)
+{
+	__atomic_store_n((uint16_t *)addr, value, __ATOMIC_RELEASE);
+}
+
+static int prepare_xray_entry_sled(struct mcount_dynamic_info *mdi, struct xray_instr_map *xrmap)
+{
+	uint8_t *sled = (uint8_t *)(uintptr_t)xrmap->address;
+	int64_t rel64;
+	int32_t rel32;
+	uint16_t head;
+	uint8_t body[9];
+
+	if (xrmap->kind != 0)
+		return INSTRUMENT_SKIPPED;
+
+	/* XRay guarantees 2-byte alignment for atomic patching; be defensive. */
+	if ((uintptr_t)sled & 1) {
+		pr_warn("unaligned xray entry sled: %p\n", sled);
+		return INSTRUMENT_FAILED;
+	}
+
+	memcpy(&head, sled, sizeof(head));
+
+	if (head == 0x9090) /* already enabled */
+		return INSTRUMENT_SUCCESS;
+
+	/* expect disabled entry sled: jmp +9 */
+	if (memcmp(sled, xray_entry_disabled, sizeof(xray_entry_disabled)))
+		return INSTRUMENT_SKIPPED;
+
+	/* sanity check: default pad at +2 while disabled */
+	if (memcmp(sled + 2, xray_sled_pad, sizeof(xray_sled_pad)))
+		pr_dbg2("xray entry sled pad mismatch: %p\n", sled);
+
+	rel64 = (int64_t)mdi->trampoline - ((int64_t)(uintptr_t)(sled + 2) + 5);
+	if (rel64 < INT32_MIN || rel64 > INT32_MAX) {
+		pr_warn("xray entry sled trampoline too far: sled=%p tramp=%#lx\n", sled,
+			mdi->trampoline);
+		return INSTRUMENT_FAILED;
+	}
+
+	rel32 = (int32_t)rel64;
+	body[0] = 0xe8; /* call rel32 */
+	memcpy(&body[1], &rel32, sizeof(rel32));
+	memcpy(&body[5], xray_nop4, sizeof(xray_nop4));
+
+	memcpy(sled + 2, body, sizeof(body));
+	__builtin___clear_cache((char *)sled + 2, (char *)sled + 11);
+
+	return INSTRUMENT_SUCCESS;
+}
+
+static int prepare_xray_exit_sled(struct mcount_dynamic_info *mdi, struct xray_instr_map *xrmap)
+{
+	uint8_t *sled = (uint8_t *)(uintptr_t)xrmap->address;
+	int64_t rel64;
+	int32_t rel32;
+	uint16_t head;
+	uint8_t body[9];
+
+	if (xrmap->kind == 0)
+		return INSTRUMENT_SKIPPED;
+
+	/* XRay guarantees 2-byte alignment for atomic patching; be defensive. */
+	if ((uintptr_t)sled & 1) {
+		pr_warn("unaligned xray exit sled: %p\n", sled);
+		return INSTRUMENT_FAILED;
+	}
+
+	memcpy(&head, sled, sizeof(head));
+
+	if (head == 0x9090) /* already enabled */
+		return INSTRUMENT_SUCCESS;
+
+	/* expect disabled exit sled: ret; cs */
+	if (memcmp(sled, xray_exit_disabled, sizeof(xray_exit_disabled)))
+		return INSTRUMENT_SKIPPED;
+
+	/* sanity check: default pad at +2 while disabled */
+	if (memcmp(sled + 2, xray_sled_pad, sizeof(xray_sled_pad)))
+		pr_dbg2("xray exit sled pad mismatch: %p\n", sled);
+
+	rel64 = (int64_t)(mdi->trampoline + 16) - ((int64_t)(uintptr_t)(sled + 2) + 5);
+	if (rel64 < INT32_MIN || rel64 > INT32_MAX) {
+		pr_warn("xray exit sled trampoline too far: sled=%p tramp=%#lx\n", sled,
+			mdi->trampoline + 16);
+		return INSTRUMENT_FAILED;
+	}
+
+	rel32 = (int32_t)rel64;
+	body[0] = 0xe8; /* call rel32 */
+	memcpy(&body[1], &rel32, sizeof(rel32));
+	body[5] = 0xc3; /* ret */
+	memcpy(&body[6], xray_nop3, sizeof(xray_nop3));
+
+	memcpy(sled + 2, body, sizeof(body));
+	__builtin___clear_cache((char *)sled + 2, (char *)sled + 11);
+
+	return INSTRUMENT_SUCCESS;
+}
+
+static int enable_xray_entry_sled(struct xray_instr_map *xrmap)
+{
+	uint8_t *sled = (uint8_t *)(uintptr_t)xrmap->address;
+	uint16_t head;
+
+	if (xrmap->kind != 0)
+		return INSTRUMENT_SKIPPED;
+
+	if ((uintptr_t)sled & 1) {
+		pr_warn("unaligned xray entry sled: %p\n", sled);
+		return INSTRUMENT_FAILED;
+	}
+
+	memcpy(&head, sled, sizeof(head));
+
+	if (head == 0x9090) /* already enabled */
+		return INSTRUMENT_SUCCESS;
+
+	if (head != 0x09eb)
+		return INSTRUMENT_SKIPPED;
+
+	__atomic_thread_fence(__ATOMIC_RELEASE);
+	xray_atomic_store2(sled, 0x9090);
+	__builtin___clear_cache((char *)sled, (char *)sled + 2);
+
+	return INSTRUMENT_SUCCESS;
+}
+
+static int enable_xray_exit_sled(struct xray_instr_map *xrmap)
+{
+	uint8_t *sled = (uint8_t *)(uintptr_t)xrmap->address;
+	uint16_t head;
+
+	if (xrmap->kind == 0)
+		return INSTRUMENT_SKIPPED;
+
+	if ((uintptr_t)sled & 1) {
+		pr_warn("unaligned xray exit sled: %p\n", sled);
+		return INSTRUMENT_FAILED;
+	}
+
+	memcpy(&head, sled, sizeof(head));
+
+	if (head == 0x9090) /* already enabled */
+		return INSTRUMENT_SUCCESS;
+
+	if (head != 0x2ec3)
+		return INSTRUMENT_SKIPPED;
+
+	__atomic_thread_fence(__ATOMIC_RELEASE);
+	xray_atomic_store2(sled, 0x9090);
+	__builtin___clear_cache((char *)sled, (char *)sled + 2);
+
+	return INSTRUMENT_SUCCESS;
+}
+
+static int disable_xray_entry_sled(struct xray_instr_map *xrmap)
+{
+	uint8_t *sled = (uint8_t *)(uintptr_t)xrmap->address;
+	uint16_t head;
+
+	if (xrmap->kind != 0)
+		return INSTRUMENT_SKIPPED;
+
+	if ((uintptr_t)sled & 1) {
+		pr_warn("unaligned xray entry sled: %p\n", sled);
+		return INSTRUMENT_FAILED;
+	}
+
+	memcpy(&head, sled, sizeof(head));
+
+	if (head == 0x09eb) /* already disabled */
+		return INSTRUMENT_SUCCESS;
+
+	if (head != 0x9090) /* unknown state */
+		return INSTRUMENT_SKIPPED;
+
+	__atomic_thread_fence(__ATOMIC_RELEASE);
+	xray_atomic_store2(sled, 0x09eb); /* eb 09 */
+	__builtin___clear_cache((char *)sled, (char *)sled + 2);
+
+	return INSTRUMENT_SUCCESS;
+}
+
+static int disable_xray_exit_sled(struct xray_instr_map *xrmap)
+{
+	uint8_t *sled = (uint8_t *)(uintptr_t)xrmap->address;
+	uint16_t head;
+
+	if (xrmap->kind == 0)
+		return INSTRUMENT_SKIPPED;
+
+	if ((uintptr_t)sled & 1) {
+		pr_warn("unaligned xray exit sled: %p\n", sled);
+		return INSTRUMENT_FAILED;
+	}
+
+	memcpy(&head, sled, sizeof(head));
+
+	if (head == 0x2ec3) /* already disabled */
+		return INSTRUMENT_SUCCESS;
+
+	if (head != 0x9090) /* unknown state */
+		return INSTRUMENT_SKIPPED;
+
+	__atomic_thread_fence(__ATOMIC_RELEASE);
+	xray_atomic_store2(sled, 0x2ec3); /* c3 2e */
+	__builtin___clear_cache((char *)sled, (char *)sled + 2);
+
+	return INSTRUMENT_SUCCESS;
+}
+
 int mcount_setup_trampoline(struct mcount_dynamic_info *mdi)
 {
 	unsigned char trampoline[] = { 0x3e, 0xff, 0x25, 0x01, 0x00, 0x00, 0x00, 0xcc };
 	unsigned long fentry_addr = (unsigned long)__fentry__;
 	unsigned long xray_entry_addr = (unsigned long)__xray_entry;
 	unsigned long xray_exit_addr = (unsigned long)__xray_exit;
+	unsigned long mo_entry_addr = (unsigned long)__mo_entry__;
+	unsigned long mo_exit_addr = (unsigned long)__mo_exit__;
+
 	size_t trampoline_size = 16;
 	void *trampoline_check;
+	unsigned long text_end;
+	bool trampoline_mapped = false;
 
 	if (mdi->type == DYNAMIC_XRAY)
 		trampoline_size *= 2;
 
 	/* find unused 16-byte at the end of the code segment */
-	mdi->trampoline = ALIGN(mdi->text_addr + mdi->text_size, PAGE_SIZE);
+	text_end = mdi->text_addr + mdi->text_size;
+	mdi->trampoline = ALIGN(text_end, PAGE_SIZE);
 	mdi->trampoline -= trampoline_size;
 
-	if (unlikely(mdi->trampoline < mdi->text_addr + mdi->text_size)) {
-		mdi->trampoline += trampoline_size;
-		mdi->text_size += PAGE_SIZE;
+	if (unlikely(mdi->trampoline < text_end)) {
+		unsigned long tramp_page = find_trampoline_page(mdi->text_addr, text_end);
 
-		pr_dbg2("adding a page for fentry trampoline at %#lx\n", mdi->trampoline);
+		if (tramp_page == 0)
+			pr_err("could not find trampoline gap near %#lx\n", text_end);
 
-		trampoline_check = mmap((void *)mdi->trampoline, PAGE_SIZE,
+		pr_dbg2("adding a page for fentry trampoline at %#lx\n", tramp_page);
+
+		trampoline_check = mmap((void *)tramp_page, PAGE_SIZE,
 					PROT_READ | PROT_WRITE | PROT_EXEC,
 					MAP_FIXED_NOREPLACE | MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 
-		if (trampoline_check != (void *)mdi->trampoline) {
+		if (trampoline_check != (void *)tramp_page) {
 			pr_err("could not map trampoline at desired location %#lx, got %#lx: %m\n",
-			       mdi->trampoline, (uintptr_t)trampoline_check);
+			       tramp_page, (uintptr_t)trampoline_check);
 		}
+
+		mdi->trampoline = tramp_page;
+		trampoline_mapped = true;
 	}
 
 	if (mprotect(PAGE_ADDR(mdi->text_addr), PAGE_LEN(mdi->text_addr, mdi->text_size),
@@ -62,15 +417,15 @@ int mcount_setup_trampoline(struct mcount_dynamic_info *mdi)
 	}
 
 	if (mdi->type == DYNAMIC_XRAY) {
-		/* jmpq  *0x1(%rip)     # <xray_entry_addr> */
+		/* jmpq  *0x1(%rip)     # <mo_entry_addr> */
 		memcpy((void *)mdi->trampoline, trampoline, sizeof(trampoline));
-		memcpy((void *)mdi->trampoline + sizeof(trampoline), &xray_entry_addr,
-		       sizeof(xray_entry_addr));
+		memcpy((void *)mdi->trampoline + sizeof(trampoline), &mo_entry_addr,
+		       sizeof(mo_entry_addr));
 
-		/* jmpq  *0x1(%rip)     # <xray_exit_addr> */
+		/* jmpq  *0x1(%rip)     # <mo_exit_addr> */
 		memcpy((void *)mdi->trampoline + 16, trampoline, sizeof(trampoline));
-		memcpy((void *)mdi->trampoline + 16 + sizeof(trampoline), &xray_exit_addr,
-		       sizeof(xray_exit_addr));
+		memcpy((void *)mdi->trampoline + 16 + sizeof(trampoline), &mo_exit_addr,
+		       sizeof(mo_exit_addr));
 	}
 	else if (mdi->type == DYNAMIC_FENTRY_NOP || mdi->type == DYNAMIC_PATCHABLE) {
 		/* jmpq  *0x1(%rip)     # <fentry_addr> */
@@ -88,6 +443,11 @@ int mcount_setup_trampoline(struct mcount_dynamic_info *mdi)
 		       sizeof(dentry_addr));
 #endif
 	}
+
+	if (trampoline_mapped) {
+		if (mprotect((void *)mdi->trampoline, PAGE_SIZE, PROT_READ | PROT_EXEC))
+			pr_err("cannot protect trampoline page at %#lx: %m\n", mdi->trampoline);
+	}
 	return 0;
 }
 
@@ -98,8 +458,8 @@ void mcount_cleanup_trampoline(struct mcount_dynamic_info *mdi)
 		pr_err("cannot restore trampoline due to protection");
 }
 
-static void read_xray_map(struct mcount_dynamic_info *mdi, struct uftrace_elf_data *elf,
-			  struct uftrace_elf_iter *iter, unsigned long offset)
+static void read_xray_map(struct mcount_dynamic_info *mdi, struct motrace_elf_data *elf,
+			  struct motrace_elf_iter *iter, unsigned long offset)
 {
 	struct xray_instr_map *xrmap;
 	unsigned i;
@@ -125,8 +485,207 @@ static void read_xray_map(struct mcount_dynamic_info *mdi, struct uftrace_elf_da
 	}
 }
 
-static void read_mcount_loc(struct mcount_dynamic_info *mdi, struct uftrace_elf_data *elf,
-			    struct uftrace_elf_iter *iter, unsigned long offset)
+struct xray_patch_ctx {
+	bool enable;
+	int patched;
+	int failed;
+	int skipped;
+};
+
+static struct mcount_dynamic_info *create_mdi_for_phdr(struct dl_phdr_info *info)
+{
+	struct mcount_dynamic_info *mdi;
+	bool base_addr_set = false;
+	unsigned i;
+
+	mdi = xzalloc(sizeof(*mdi));
+	mdi->type = DYNAMIC_XRAY;
+	INIT_LIST_HEAD(&mdi->bad_syms);
+
+	for (i = 0; i < info->dlpi_phnum; i++) {
+		const ElfW(Phdr) *phdr = &info->dlpi_phdr[i];
+
+		if (phdr->p_type != PT_LOAD)
+			continue;
+
+		if (!base_addr_set) {
+			mdi->base_addr = phdr->p_vaddr;
+			base_addr_set = true;
+		}
+
+		if (!(phdr->p_flags & PF_X))
+			continue;
+
+		mdi->text_addr = phdr->p_vaddr;
+		mdi->text_size = phdr->p_memsz;
+		break;
+	}
+
+	mdi->base_addr += info->dlpi_addr;
+	mdi->text_addr += info->dlpi_addr;
+
+	return mdi;
+}
+
+static int patch_xray_module(struct dl_phdr_info *info, size_t sz, void *data)
+{
+	struct xray_patch_ctx *ctx = data;
+	struct mcount_dynamic_info *mdi;
+	struct motrace_elf_data elf;
+	struct motrace_elf_iter iter;
+	const char *path = info->dlpi_name;
+	bool is_main = false;
+	bool found = false;
+	unsigned i;
+
+	(void)sz;
+
+	if (!path || !*path) {
+		path = mcount_exename;
+		is_main = true;
+	}
+
+	if (!path || !*path)
+		return 0;
+
+	mdi = create_mdi_for_phdr(info);
+	if (mdi == NULL)
+		return 0;
+
+	/* Skip main executable if it's not a real file (should not happen). */
+	if (is_main && access(path, F_OK) != 0)
+		goto out_free;
+
+	if (elf_init(path, &elf) < 0)
+		goto out_free;
+
+	elf_for_each_shdr(&elf, &iter) {
+		char *shstr = elf_get_name(&elf, &iter, iter.shdr.sh_name);
+
+		if (!strcmp(shstr, XRAY_SECT)) {
+			read_xray_map(mdi, &elf, &iter, mdi->base_addr);
+			found = true;
+			break;
+		}
+	}
+
+	elf_finish(&elf);
+
+	if (!found)
+		goto out_free;
+
+	if (mcount_setup_trampoline(mdi) < 0) {
+		ctx->failed++;
+		goto out_free_targets;
+	}
+
+	if (ctx->enable) {
+		for (i = 0; i < mdi->nr_patch_target; i++) {
+			struct xray_instr_map *xrmap =
+				&((struct xray_instr_map *)mdi->patch_target)[i];
+			int r;
+
+			r = prepare_xray_entry_sled(mdi, xrmap);
+			if (r == INSTRUMENT_SUCCESS)
+				ctx->patched++;
+			else if (r == INSTRUMENT_SKIPPED)
+				ctx->skipped++;
+			else
+				ctx->failed++;
+
+			r = prepare_xray_exit_sled(mdi, xrmap);
+			if (r == INSTRUMENT_SUCCESS)
+				ctx->patched++;
+			else if (r == INSTRUMENT_SKIPPED)
+				ctx->skipped++;
+			else
+				ctx->failed++;
+		}
+
+		/* flip to enabled state (2-byte atomic) */
+		for (i = 0; i < mdi->nr_patch_target; i++) {
+			struct xray_instr_map *xrmap =
+				&((struct xray_instr_map *)mdi->patch_target)[i];
+			int r;
+
+			r = enable_xray_exit_sled(xrmap);
+			if (r == INSTRUMENT_SUCCESS)
+				ctx->patched++;
+			else if (r == INSTRUMENT_SKIPPED)
+				ctx->skipped++;
+			else
+				ctx->failed++;
+		}
+
+		for (i = 0; i < mdi->nr_patch_target; i++) {
+			struct xray_instr_map *xrmap =
+				&((struct xray_instr_map *)mdi->patch_target)[i];
+			int r;
+
+			r = enable_xray_entry_sled(xrmap);
+			if (r == INSTRUMENT_SUCCESS)
+				ctx->patched++;
+			else if (r == INSTRUMENT_SKIPPED)
+				ctx->skipped++;
+			else
+				ctx->failed++;
+		}
+	}
+	else {
+		/* flip to disabled state (2-byte atomic) */
+		for (i = 0; i < mdi->nr_patch_target; i++) {
+			struct xray_instr_map *xrmap =
+				&((struct xray_instr_map *)mdi->patch_target)[i];
+			int r;
+
+			r = disable_xray_exit_sled(xrmap);
+			if (r == INSTRUMENT_SUCCESS)
+				ctx->patched++;
+			else if (r == INSTRUMENT_SKIPPED)
+				ctx->skipped++;
+			else
+				ctx->failed++;
+		}
+
+		for (i = 0; i < mdi->nr_patch_target; i++) {
+			struct xray_instr_map *xrmap =
+				&((struct xray_instr_map *)mdi->patch_target)[i];
+			int r;
+
+			r = disable_xray_entry_sled(xrmap);
+			if (r == INSTRUMENT_SUCCESS)
+				ctx->patched++;
+			else if (r == INSTRUMENT_SKIPPED)
+				ctx->skipped++;
+			else
+				ctx->failed++;
+		}
+	}
+
+	mcount_cleanup_trampoline(mdi);
+
+out_free_targets:
+	free(mdi->patch_target);
+out_free:
+	free(mdi);
+	return 0;
+}
+
+int mcount_mo_xray_patch(bool enable)
+{
+	struct xray_patch_ctx ctx = {
+		.enable = enable,
+	};
+
+	dl_iterate_phdr(patch_xray_module, &ctx);
+
+	if (ctx.failed)
+		return -1;
+	return 0;
+}
+
+static void read_mcount_loc(struct mcount_dynamic_info *mdi, struct motrace_elf_data *elf,
+			    struct motrace_elf_iter *iter, unsigned long offset)
 {
 	typeof(iter->shdr) *shdr = &iter->shdr;
 
@@ -147,8 +706,8 @@ static void read_mcount_loc(struct mcount_dynamic_info *mdi, struct uftrace_elf_
 	}
 }
 
-static void read_patchable_loc(struct mcount_dynamic_info *mdi, struct uftrace_elf_data *elf,
-			       struct uftrace_elf_iter *iter, unsigned long offset)
+static void read_patchable_loc(struct mcount_dynamic_info *mdi, struct motrace_elf_data *elf,
+			       struct motrace_elf_iter *iter, unsigned long offset)
 {
 	typeof(iter->shdr) *shdr = &iter->shdr;
 	unsigned i;
@@ -169,10 +728,10 @@ static void read_patchable_loc(struct mcount_dynamic_info *mdi, struct uftrace_e
 	}
 }
 
-void mcount_arch_find_module(struct mcount_dynamic_info *mdi, struct uftrace_symtab *symtab)
+void mcount_arch_find_module(struct mcount_dynamic_info *mdi, struct motrace_symtab *symtab)
 {
-	struct uftrace_elf_data elf;
-	struct uftrace_elf_iter iter;
+	struct motrace_elf_data elf;
+	struct motrace_elf_iter iter;
 	unsigned i = 0;
 
 	mdi->type = DYNAMIC_NONE;
@@ -191,7 +750,7 @@ void mcount_arch_find_module(struct mcount_dynamic_info *mdi, struct uftrace_sym
 
 		if (!strcmp(shstr, XRAY_SECT)) {
 			mdi->type = DYNAMIC_XRAY;
-			read_xray_map(mdi, &elf, &iter, mdi->base_addr);
+			//			read_xray_map(mdi, &elf, &iter, mdi->base_addr);
 			goto out;
 		}
 
@@ -206,7 +765,7 @@ void mcount_arch_find_module(struct mcount_dynamic_info *mdi, struct uftrace_sym
 	 * signature.
 	 */
 	for (i = 0; i < symtab->nr_sym; i++) {
-		struct uftrace_symbol *sym = &symtab->sym[i];
+		struct motrace_symbol *sym = &symtab->sym[i];
 		void *code_addr = (void *)sym->addr + mdi->map->start;
 
 		if (sym->type != ST_LOCAL_FUNC && sym->type != ST_GLOBAL_FUNC)
@@ -247,7 +806,7 @@ void mcount_arch_find_module(struct mcount_dynamic_info *mdi, struct uftrace_sym
 	}
 
 out:
-	pr_dbg("dynamic patch type: %s: %d (%s)\n", uftrace_basename(mdi->map->libname), mdi->type,
+	pr_dbg("dynamic patch type: %s: %d (%s)\n", motrace_basename(mdi->map->libname), mdi->type,
 	       mdi_type_names[mdi->type]);
 
 	elf_finish(&elf);
@@ -258,7 +817,109 @@ static unsigned long get_target_addr(struct mcount_dynamic_info *mdi, unsigned l
 	return mdi->trampoline - (addr + CALL_INSN_SIZE);
 }
 
-static int patch_fentry_code(struct mcount_dynamic_info *mdi, struct uftrace_symbol *sym)
+static int patch_mo_return_code(struct mcount_dynamic_info *mdi, struct motrace_symbol *sym)
+{
+	csh handle;
+	cs_insn *insn;
+	size_t i, count;
+	uint32_t target_addr;
+	unsigned char *code = (void *)sym->addr + mdi->map->start;
+
+	if (cs_open(CS_ARCH_X86, CS_MODE_64, &handle) != CS_ERR_OK) {
+		pr_err("Failed to open Capstone engine: %s\n", cs_strerror(cs_errno(handle)));
+		return INSTRUMENT_FAILED;
+	}
+	count = cs_disasm(handle, code, sym->size, (uintptr_t)code, 0, &insn);
+	if (count == 0) {
+		cs_close(&handle);
+		pr_err("Failed to disassemble code: %s\n", cs_strerror(cs_errno(handle)));
+		return INSTRUMENT_FAILED;
+	}
+	for (i = 0; i < count; i++) {
+		if (insn[i].id == X86_INS_NOP) {
+			unsigned char *jmp_addr = (unsigned char *)insn[i].address;
+			if (memcmp(jmp_addr, nop11, sizeof(nop11)) == 0) {
+				target_addr =
+					(uint32_t)get_target_addr(mdi, (unsigned long)jmp_addr) +
+					16;
+				if (target_addr == 0) {
+					cs_free(insn, count);
+					cs_close(&handle);
+					pr_err("Failed to get target address\n");
+					return INSTRUMENT_SKIPPED;
+				}
+				/* make a "call" insn with 4-byte offset */
+				jmp_addr[0] = 0xe8;
+				/* hopefully we're not patching 'memcpy' itself */
+				memcpy(&jmp_addr[1], &target_addr, sizeof(target_addr));
+				memcpy(&jmp_addr[5], nop6, sizeof(nop6));
+				__builtin___clear_cache((char *)jmp_addr, (char *)jmp_addr + 11);
+			}
+		}
+		else if (insn[i].id == X86_INS_RET) {
+			unsigned char *ret_addr = (unsigned char *)insn[i].address;
+			if (memcmp(ret_addr + 1, mo_return_nop, sizeof(mo_return_nop)) == 0) {
+				target_addr =
+					(uint32_t)get_target_addr(mdi, (unsigned long)ret_addr) +
+					16;
+				if (target_addr == 0) {
+					cs_free(insn, count);
+					cs_close(&handle);
+					pr_err("Failed to get target address\n");
+					return INSTRUMENT_SKIPPED;
+				}
+				/* make a "call" insn with 4-byte offset */
+				ret_addr[0] = 0xe8;
+				/* hopefully we're not patching 'memcpy' itself */
+				memcpy(&ret_addr[1], &target_addr, sizeof(target_addr));
+				ret_addr[5] = 0xc3;
+				memcpy(&ret_addr[6], nop5, sizeof(nop5));
+				__builtin___clear_cache((char *)ret_addr, (char *)ret_addr + 11);
+			}
+			else {
+				pr_err("Failed to find patchable return instruction\n");
+			}
+		}
+	}
+	cs_free(insn, count);
+	cs_close(&handle);
+	return INSTRUMENT_SUCCESS;
+}
+
+static int patch_mo_code(struct mcount_dynamic_info *mdi, struct motrace_symbol *sym)
+{
+	uint32_t target_addr;
+	unsigned char *insn = (void *)sym->addr + mdi->map->start;
+
+	/* skip 'endbr64' instruction, which is inserted by (implicit) -fcf-protection option. */
+	if (!memcmp(insn, endbr64, sizeof(endbr64)))
+		insn += sizeof(endbr64);
+
+	/* get the jump offset to the trampoline */
+	target_addr = get_target_addr(mdi, (unsigned long)insn);
+	if (target_addr == 0)
+		return INSTRUMENT_SKIPPED;
+
+	/* make a "call" insn with 4-byte offset */
+	insn[0] = 0xe8;
+	/* hopefully we're not patching 'memcpy' itself */
+	memcpy(&insn[1], &target_addr, sizeof(target_addr));
+
+	memcpy(&insn[5], nop6, sizeof(nop6));
+
+	__builtin___clear_cache((char *)insn, (char *)insn + 11);
+
+	pr_dbg3("update %p for '%s' function dynamically to call __mo_entry__ and __mo_exit__\n",
+		insn, sym->name);
+
+	if (patch_mo_return_code(mdi, sym) != INSTRUMENT_SUCCESS) {
+		pr_err("Failed to patch return code\n");
+		return INSTRUMENT_FAILED;
+	}
+	return INSTRUMENT_SUCCESS;
+}
+
+static int patch_fentry_code(struct mcount_dynamic_info *mdi, struct motrace_symbol *sym)
 {
 	unsigned char *insn = (void *)sym->addr + mdi->map->start;
 	unsigned int target_addr;
@@ -291,18 +952,23 @@ static int patch_fentry_code(struct mcount_dynamic_info *mdi, struct uftrace_sym
 	return INSTRUMENT_SUCCESS;
 }
 
-static int patch_fentry_func(struct mcount_dynamic_info *mdi, struct uftrace_symbol *sym)
+static int patch_fentry_func(struct mcount_dynamic_info *mdi, struct motrace_symbol *sym)
 {
 	return patch_fentry_code(mdi, sym);
 }
 
-static int patch_patchable_func(struct mcount_dynamic_info *mdi, struct uftrace_symbol *sym)
+static int patch_patchable_func(struct mcount_dynamic_info *mdi, struct motrace_symbol *sym)
 {
 	/* it does the same patch logic with fentry. */
 	return patch_fentry_code(mdi, sym);
 }
 
-static int update_xray_code(struct mcount_dynamic_info *mdi, struct uftrace_symbol *sym,
+static int patch_mo_func(struct mcount_dynamic_info *mdi, struct motrace_symbol *sym)
+{
+	return patch_mo_code(mdi, sym);
+}
+
+static int update_xray_code(struct mcount_dynamic_info *mdi, struct motrace_symbol *sym,
 			    struct xray_instr_map *xrmap)
 {
 	unsigned char entry_insn[] = { 0xeb, 0x09 };
@@ -356,7 +1022,7 @@ static int update_xray_code(struct mcount_dynamic_info *mdi, struct uftrace_symb
 	return INSTRUMENT_SUCCESS;
 }
 
-static int patch_xray_func(struct mcount_dynamic_info *mdi, struct uftrace_symbol *sym)
+static int patch_xray_func(struct mcount_dynamic_info *mdi, struct motrace_symbol *sym)
 {
 	unsigned i;
 	int ret = -2;
@@ -475,7 +1141,7 @@ static void patch_code(struct mcount_dynamic_info *mdi, struct mcount_disasm_inf
 	__builtin___clear_cache(origin_code_addr, origin_code_addr + info->orig_size);
 }
 
-static int patch_normal_func(struct mcount_dynamic_info *mdi, struct uftrace_symbol *sym,
+static int patch_normal_func(struct mcount_dynamic_info *mdi, struct motrace_symbol *sym,
 			     struct mcount_disasm_engine *disasm)
 {
 	uint8_t jmp_insn[15] = {
@@ -553,7 +1219,7 @@ static int unpatch_func(uint8_t *insn, char *name)
 	return INSTRUMENT_SUCCESS;
 }
 
-static int unpatch_fentry_func(struct mcount_dynamic_info *mdi, struct uftrace_symbol *sym)
+static int unpatch_fentry_func(struct mcount_dynamic_info *mdi, struct motrace_symbol *sym)
 {
 	uint64_t sym_addr = sym->addr + mdi->map->start;
 
@@ -562,7 +1228,7 @@ static int unpatch_fentry_func(struct mcount_dynamic_info *mdi, struct uftrace_s
 
 static int cmp_loc(const void *a, const void *b)
 {
-	const struct uftrace_symbol *sym = a;
+	const struct motrace_symbol *sym = a;
 	uintptr_t loc = *(uintptr_t *)b;
 
 	if (sym->addr <= loc && loc < sym->addr + sym->size)
@@ -571,7 +1237,7 @@ static int cmp_loc(const void *a, const void *b)
 	return sym->addr > loc ? 1 : -1;
 }
 
-static int unpatch_mcount_func(struct mcount_dynamic_info *mdi, struct uftrace_symbol *sym)
+static int unpatch_mcount_func(struct mcount_dynamic_info *mdi, struct motrace_symbol *sym)
 {
 	unsigned long *mcount_loc = mdi->patch_target;
 	uintptr_t *loc;
@@ -588,7 +1254,7 @@ static int unpatch_mcount_func(struct mcount_dynamic_info *mdi, struct uftrace_s
 	return INSTRUMENT_SKIPPED;
 }
 
-int mcount_patch_func(struct mcount_dynamic_info *mdi, struct uftrace_symbol *sym,
+int mcount_patch_func(struct mcount_dynamic_info *mdi, struct motrace_symbol *sym,
 		      struct mcount_disasm_engine *disasm, unsigned min_size)
 {
 	int result = INSTRUMENT_SKIPPED;
@@ -601,7 +1267,8 @@ int mcount_patch_func(struct mcount_dynamic_info *mdi, struct uftrace_symbol *sy
 
 	switch (mdi->type) {
 	case DYNAMIC_XRAY:
-		result = patch_xray_func(mdi, sym);
+		//  reuse xray to patch mo_entry and mo_exit
+		result = patch_mo_func(mdi, sym);
 		break;
 
 	case DYNAMIC_FENTRY_NOP:
@@ -622,7 +1289,7 @@ int mcount_patch_func(struct mcount_dynamic_info *mdi, struct uftrace_symbol *sy
 	return result;
 }
 
-int mcount_unpatch_func(struct mcount_dynamic_info *mdi, struct uftrace_symbol *sym,
+int mcount_unpatch_func(struct mcount_dynamic_info *mdi, struct motrace_symbol *sym,
 			struct mcount_disasm_engine *disasm)
 {
 	int result = INSTRUMENT_SKIPPED;
@@ -643,7 +1310,7 @@ int mcount_unpatch_func(struct mcount_dynamic_info *mdi, struct uftrace_symbol *
 	return result;
 }
 
-static void revert_normal_func(struct mcount_dynamic_info *mdi, struct uftrace_symbol *sym,
+static void revert_normal_func(struct mcount_dynamic_info *mdi, struct motrace_symbol *sym,
 			       struct mcount_disasm_engine *disasm)
 {
 	void *addr = (void *)(uintptr_t)sym->addr + mdi->map->start;

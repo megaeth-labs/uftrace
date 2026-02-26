@@ -1,5 +1,5 @@
-#ifndef UFTRACE_TRACEFS_H
-#define UFTRACE_TRACEFS_H
+#ifndef MOTRACE_TRACEFS_H
+#define MOTRACE_TRACEFS_H
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -24,4 +24,4 @@ int set_tracing_pid(int pid);
 
 int set_tracing_clock(char *clock_str);
 
-#endif /* UFTRACE_TRACEFS_H */
+#endif /* MOTRACE_TRACEFS_H */

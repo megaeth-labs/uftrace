@@ -9,7 +9,7 @@
 
 #include "libmcount/internal.h"
 #include "libmcount/mcount.h"
-#include "uftrace.h"
+#include "motrace.h"
 #include "utils/symbol.h"
 #include "utils/utils.h"
 
@@ -20,7 +20,7 @@
 #define TRAMP_JMP_OFFSET 6
 
 extern void __weak plt_hooker(void);
-struct plthook_data *mcount_arch_hook_no_plt(struct uftrace_elf_data *elf, const char *modname,
+struct plthook_data *mcount_arch_hook_no_plt(struct motrace_elf_data *elf, const char *modname,
 					     unsigned long offset)
 {
 	struct plthook_data *pd;
@@ -84,7 +84,7 @@ struct plthook_data *mcount_arch_hook_no_plt(struct uftrace_elf_data *elf, const
 	for (i = 0; i < pd->dsymtab.nr_sym; i++) {
 		uint32_t pcrel;
 		Elf64_Rela *rela;
-		struct uftrace_symbol *sym;
+		struct motrace_symbol *sym;
 		unsigned k;
 		bool skip = false;
 

@@ -6,7 +6,7 @@
 #define PR_FMT "event"
 #define PR_DOMAIN DBG_EVENT
 
-#include "uftrace.h"
+#include "motrace.h"
 #include "utils/event.h"
 #include "utils/fstack.h"
 #include "utils/kernel.h"
@@ -16,7 +16,7 @@
 
 /**
  * event_get_name - find event name from event id
- * @handle - handle to uftrace data
+ * @handle - handle to motrace data
  * @evt_id - event id
  *
  * This function returns a string of event name matching to @evt_id.
@@ -24,7 +24,7 @@
  * since it needs to call libtraceevent function for kernel events
  * which is not linked into libmcount.
  */
-char *event_get_name(struct uftrace_data *handle, unsigned evt_id)
+char *event_get_name(struct motrace_data *handle, unsigned evt_id)
 {
 	char *evt_name = NULL;
 	struct event_format *event;
@@ -35,7 +35,7 @@ char *event_get_name(struct uftrace_data *handle, unsigned evt_id)
 	}
 
 	if (evt_id >= EVENT_ID_USER) {
-		struct uftrace_event *ev;
+		struct motrace_event *ev;
 
 		list_for_each_entry(ev, &handle->events, list) {
 			if (ev->id == evt_id) {
@@ -143,7 +143,7 @@ out:
 
 /**
  * event_get_data_str - convert event data to a string
- * @handle - handle to uftrace data
+ * @handle - handle to motrace data
  * @evt_id - event id
  * @data - raw event data
  * @len - length of event data
@@ -153,19 +153,19 @@ out:
  * This function returns a string of event name matching to @evt_id.
  * Callers must free the returned string.
  */
-char *event_get_data_str(struct uftrace_data *handle, unsigned evt_id, void *data, int len,
-			 struct uftrace_symbol *sym, bool verbose)
+char *event_get_data_str(struct motrace_data *handle, unsigned evt_id, void *data, int len,
+			 struct motrace_symbol *sym, bool verbose)
 {
 	char *str = NULL;
 	const char *diff = "";
 	char vbuf[128];
 	union {
-		struct uftrace_proc_statm statm;
-		struct uftrace_page_fault pgfault;
-		struct uftrace_pmu_cycle cycle;
-		struct uftrace_pmu_cache cache;
-		struct uftrace_pmu_branch branch;
-		struct uftrace_watch_event watch;
+		struct motrace_proc_statm statm;
+		struct motrace_page_fault pgfault;
+		struct motrace_pmu_cycle cycle;
+		struct motrace_pmu_cache cache;
+		struct motrace_pmu_branch branch;
+		struct motrace_watch_event watch;
 	} u;
 
 	switch (evt_id) {
@@ -282,11 +282,11 @@ char *event_get_data_str(struct uftrace_data *handle, unsigned evt_id, void *dat
 
 /**
  * finish_events_file - cleanup memory for events in the given handle
- * @handle: uftrace_data data structure
+ * @handle: motrace_data data structure
  */
-void finish_events_file(struct uftrace_data *handle)
+void finish_events_file(struct motrace_data *handle)
 {
-	struct uftrace_event *ev, *tmp;
+	struct motrace_event *ev, *tmp;
 
 	list_for_each_entry_safe(ev, tmp, &handle->events, list) {
 		list_del(&ev->list);
@@ -298,14 +298,14 @@ void finish_events_file(struct uftrace_data *handle)
 
 /**
  * read_events_file - read 'events.txt' file from data directory
- * @handle: uftrace_data data structure
+ * @handle: motrace_data data structure
  *
  * This function read the events file in the @handle->dirname and build event
  * information (for userspace).
  *
  * It returns 0 for success, -1 for error.
  */
-int read_events_file(struct uftrace_data *handle)
+int read_events_file(struct motrace_data *handle)
 {
 	FILE *fp;
 	char *fname = NULL;
@@ -329,7 +329,7 @@ int read_events_file(struct uftrace_data *handle)
 		char provider[512];
 		char event[512];
 		unsigned evt_id;
-		struct uftrace_event *ev;
+		struct motrace_event *ev;
 
 		if (!strncmp(line, "EVENT", 5) &&
 		    sscanf(line + 7, "%u %[^:]:%s", &evt_id, provider, event) == 3) {
@@ -353,7 +353,7 @@ int read_events_file(struct uftrace_data *handle)
 TEST_CASE(event_name)
 {
 	unsigned i;
-	struct uftrace_data handle = {};
+	struct motrace_data handle = {};
 	struct {
 		unsigned evt_id;
 		char *evt_name;
@@ -383,9 +383,9 @@ TEST_CASE(event_data)
 {
 	char msg[] = "this is external data.";
 	char comm[] = "taskname";
-	struct uftrace_data handle = {};
-	struct uftrace_page_fault pgfault = { 1977, 1102 };
-	struct uftrace_pmu_cycle cycle = { 1024, 2048 };
+	struct motrace_data handle = {};
+	struct motrace_page_fault pgfault = { 1977, 1102 };
+	struct motrace_pmu_cycle cycle = { 1024, 2048 };
 	int cpu = 123;
 	unsigned i;
 
@@ -415,9 +415,9 @@ TEST_CASE(event_read_from_file)
 {
 	FILE *fp;
 	char *fname = NULL;
-	struct uftrace_event *ev;
+	struct motrace_event *ev;
 
-	struct uftrace_data handle = {
+	struct motrace_data handle = {
 		.dirname = ".",
 	};
 	INIT_LIST_HEAD(&handle.events);
@@ -426,7 +426,7 @@ TEST_CASE(event_read_from_file)
 
 	fp = fopen(fname, "w");
 	TEST_NE(fp, NULL);
-	fprintf(fp, "EVENT: 1000000 uftrace:event\n");
+	fprintf(fp, "EVENT: 1000000 motrace:event\n");
 	fclose(fp);
 
 	pr_dbg("testing event read from file\n");
@@ -434,7 +434,7 @@ TEST_CASE(event_read_from_file)
 
 	ev = list_first_entry(&handle.events, typeof(*ev), list);
 	TEST_EQ(ev->id, EVENT_ID_USER);
-	TEST_STREQ(ev->provider, "uftrace");
+	TEST_STREQ(ev->provider, "motrace");
 	TEST_STREQ(ev->event, "event");
 
 	finish_events_file(&handle);

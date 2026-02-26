@@ -1,5 +1,5 @@
 /*
- * dummy mcount() routine for uftrace
+ * dummy mcount() routine for motrace
  *
  * Copyright (C) 2015-2017, LG Electronics, Namhyung Kim <namhyung.kim@lge.com>
  *

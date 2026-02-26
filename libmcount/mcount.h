@@ -6,8 +6,8 @@
  * Released under the GPL v2.
  */
 
-#ifndef UFTRACE_MCOUNT_H
-#define UFTRACE_MCOUNT_H
+#ifndef MOTRACE_MCOUNT_H
+#define MOTRACE_MCOUNT_H
 
 #include <inttypes.h>
 #include <stdbool.h>
@@ -15,7 +15,7 @@
 
 #include "utils/rbtree.h"
 
-#define UFTRACE_DIR_NAME "uftrace.data"
+#define MOTRACE_DIR_NAME "motrace.data"
 
 #define MCOUNT_RSTACK_MAX OPT_RSTACK_DEFAULT
 #define MCOUNT_DEFAULT_DEPTH OPT_DEPTH_DEFAULT
@@ -53,6 +53,9 @@ struct mcount_ret_stack {
 	/* time in nsec (CLOCK_MONOTONIC) */
 	uint64_t start_time;
 	uint64_t end_time;
+	/* thread cpu time in nsec (CLOCK_THREAD_CPUTIME_ID) */
+	uint64_t start_cpu_time;
+	uint64_t cpu_time;
 	uint64_t filter_time;
 	unsigned filter_size;
 	unsigned short depth;
@@ -70,9 +73,6 @@ void _mcleanup(void);
 void mcount_restore(void);
 void mcount_reset(void);
 
-#define SHMEM_BUFFER_SIZE_KB 128
-#define SHMEM_BUFFER_SIZE (SHMEM_BUFFER_SIZE_KB * KB)
-
 enum shmem_buffer_flags {
 	SHMEM_FL_NEW = (1U << 0),
 	SHMEM_FL_WRITTEN = (1U << 1),
@@ -89,4 +89,4 @@ struct mcount_shmem_buffer {
 /* must be in sync with enum debug_domain (bits) */
 #define DBG_DOMAIN_STR "TSDFfsKMpPERWw"
 
-#endif /* UFTRACE_MCOUNT_H */
+#endif /* MOTRACE_MCOUNT_H */

@@ -3,7 +3,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 
-#include "uftrace.h"
+#include "motrace.h"
 #include "utils/utils.h"
 #include "version.h"
 
@@ -24,7 +24,7 @@ static struct option demangler_options[] = {
 };
 
 static const char demangler_usage[] =
-	"demangler " UFTRACE_VERSION "\n"
+	"demangler " MOTRACE_VERSION "\n"
 	"\n"
 	" OPTION:\n"
 	"      --simple           Use internal simple demangler (default)\n"

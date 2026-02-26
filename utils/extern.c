@@ -19,15 +19,15 @@
 #define PR_FMT "fstack"
 #define PR_DOMAIN DBG_FSTACK
 
-#include "uftrace.h"
+#include "motrace.h"
 #include "utils/fstack.h"
 #include "utils/utils.h"
 
 #define DEFAULT_FILENAME "extern.dat"
 
-int setup_extern_data(struct uftrace_data *handle, struct uftrace_opts *opts)
+int setup_extern_data(struct motrace_data *handle, struct motrace_opts *opts)
 {
-	struct uftrace_extern_reader *extn;
+	struct motrace_extern_reader *extn;
 	char *filename;
 	FILE *fp;
 
@@ -58,7 +58,7 @@ int setup_extern_data(struct uftrace_data *handle, struct uftrace_opts *opts)
 	return 1;
 }
 
-int read_extern_data(struct uftrace_data *handle, struct uftrace_extern_reader *extn)
+int read_extern_data(struct motrace_data *handle, struct motrace_extern_reader *extn)
 {
 	char buf[EXTERN_DATA_MAX + 64];
 	char *pos;
@@ -110,11 +110,11 @@ retry:
 	return 0;
 }
 
-struct uftrace_record *get_extern_record(struct uftrace_extern_reader *extn,
-					 struct uftrace_record *rec)
+struct motrace_record *get_extern_record(struct motrace_extern_reader *extn,
+					 struct motrace_record *rec)
 {
 	rec->time = extn->time;
-	rec->type = UFTRACE_EVENT;
+	rec->type = MOTRACE_EVENT;
 	rec->addr = EVENT_ID_EXTERN_DATA;
 	rec->more = 1;
 	rec->magic = RECORD_MAGIC;
@@ -122,9 +122,9 @@ struct uftrace_record *get_extern_record(struct uftrace_extern_reader *extn,
 	return rec;
 }
 
-int finish_extern_data(struct uftrace_data *handle)
+int finish_extern_data(struct motrace_data *handle)
 {
-	struct uftrace_extern_reader *extn = handle->extn;
+	struct motrace_extern_reader *extn = handle->extn;
 
 	if (extn && extn->fp != NULL) {
 		fclose(extn->fp);
@@ -145,10 +145,10 @@ int finish_extern_data(struct uftrace_data *handle)
 TEST_CASE(fstack_extern_data1)
 {
 	int fd;
-	struct uftrace_data handle = {
+	struct motrace_data handle = {
 		.dirname = "extern.test",
 	};
-	struct uftrace_opts opts = {
+	struct motrace_opts opts = {
 		.dirname = "extern.test",
 	};
 	const char extern_data[] = "# test data\n"
@@ -197,10 +197,10 @@ TEST_CASE(fstack_extern_data1)
 TEST_CASE(fstack_extern_data2)
 {
 	int fd;
-	struct uftrace_data handle = {
+	struct motrace_data handle = {
 		.dirname = "extern.test",
 	};
-	struct uftrace_opts opts = {
+	struct motrace_opts opts = {
 		.dirname = "extern.test",
 	};
 	const char test_data[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ123456";

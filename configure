@@ -2,7 +2,7 @@
 #-*- mode: shell-script; -*-
 
 if [ $(uname -s) != "Linux" ]; then
-    echo "uftrace is only supported on Linux"
+    echo "motrace is only supported on Linux"
     exit
 fi
 
@@ -18,7 +18,7 @@ usage() {
   --help                print this message
   --prefix=<DIR>        set install root dir as <DIR>        (default: /usr/local)
   --bindir=<DIR>        set executable install dir as <DIR>  (default: \${prefix}/bin)
-  --libdir=<DIR>        set library install dir as <DIR>     (default: \${prefix}/lib/uftrace)
+  --libdir=<DIR>        set library install dir as <DIR>     (default: \${prefix}/lib/motrace)
   --mandir=<DIR>        set manual doc install dir as <DIR>  (default: \${prefix}/share/man)
   --objdir=<DIR>        set build dir as <DIR>               (default: \${PWD})
   --sysconfdir=<DIR>    override the etc dir as <DIR>
@@ -28,15 +28,8 @@ usage() {
   --without-libelf      build without libelf (and libdw)     (even if found on the system)
   --without-libdw       build without libdw                  (even if found on the system)
   --without-libstdc++   build without libstdc++              (even if found on the system)
-  --without-libpython   build without libpython              (even if found on the system)
-  --without-libluajit   build without libluajit              (even if found on the system)
   --without-libncurses  build without libncursesw            (even if found on the system)
   --without-libunwind   build without libunwind              (even if found on the system)
-  --without-capstone    build without libcapstone            (even if found on the system)
-  --without-perf        build without perf event             (even if available)
-  --without-schedule    build without scheduler event        (even if available)
-  --without-libtraceevent
-                        build without libtraceevent          (even if found on the system)
 
   --arch=<ARCH>         set target architecture              (default: system default arch)
                         e.g. x86_64, aarch64, i386, or arm
@@ -142,7 +135,7 @@ if [ ! -z "$ldflags" ]; then
 fi
 
 bindir=${bindir:-${prefix}/bin}
-libdir=${libdir:-${prefix}/lib/uftrace}
+libdir=${libdir:-${prefix}/lib/motrace}
 etcdir=${etcdir:-${prefix}/etc}
 mandir=${mandir:-${prefix}/share/man}
 
@@ -195,15 +188,9 @@ for dep in $IGNORE; do
     case "$dep" in
         libelf)        TARGET=have_libelf        ;;
         libdw)         TARGET=have_libdw         ;;
-        libpython*)    TARGET='have_libpython*'  ;;
-        libluajit*)    TARGET=have_libluajit     ;;
         libncurse*)    TARGET=have_libncurses    ;;
         libunwind)     TARGET=have_libunwind     ;;
         libstdc++)     TARGET=cxa_demangle       ;;
-        capstone)      TARGET=have_libcapstone   ;;
-        perf*)         TARGET=perf_clockid       ;;
-        sched*)        TARGET=perf_context_switch;;
-        libtraceevent) TARGET=have_libtraceevent   ;;
         *)             ;;
     esac
     if [ ! -z "$TARGET" ]; then
@@ -211,7 +198,7 @@ for dep in $IGNORE; do
     fi
 done
 
-echo "uftrace detected system features:"
+echo "motrace detected system features:"
 
 print_feature()
 {
@@ -263,14 +250,8 @@ print_feature2()
 printf "...%15s: %s\n" "prefix" "${prefix}"
 print_feature "libelf" "have_libelf" "more flexible ELF data handling"
 print_feature "libdw" "have_libdw" "DWARF debug info support"
-print_feature2 "libpython" "have_libpython2.7" "have_libpython3" "python tracing & scripting support"
-print_feature "libluajit" "have_libluajit" "luajit scripting support"
 print_feature "libncursesw" "have_libncurses" "TUI support"
 print_feature "cxa_demangle" "cxa_demangle" "full demangler support with libstdc++"
-print_feature "perf_event" "perf_clockid" "perf (PMU) event support"
-print_feature "schedule" "perf_context_switch" "scheduler event support"
-print_feature "capstone" "have_libcapstone" "full dynamic tracing support"
-print_feature "libtraceevent" "have_libtraceevent" "kernel tracing support"
 print_feature "libunwind" "have_libunwind" "stacktrace support (optional for debugging)"
 
 cat >$output <<EOF
@@ -318,11 +299,11 @@ all: prepare
 	@\$(MAKE) -C \$(srcdir)
 
 clean:
-	@rm -rf cmds arch libmcount libtraceevent utils misc python
-	@rm -f uftrace version.h *.o *.op
+	@rm -rf cmds arch libmcount utils misc
+	@rm -f motrace version.h *.o *.op
 
 prepare:
-	@mkdir -p cmds arch/\$(ARCH) libmcount libtraceevent utils misc python
+	@mkdir -p cmds arch/\$(ARCH) libmcount utils misc
 
 install:
 	@\$(MAKE) -C \$(srcdir) install

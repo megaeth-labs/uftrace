@@ -30,8 +30,8 @@ struct stapsdt {
 /* user-given event specifier (may contains patterns) */
 struct event_spec {
 	struct list_head list;
-	struct uftrace_pattern provider;
-	struct uftrace_pattern event;
+	struct motrace_pattern provider;
+	struct motrace_pattern event;
 };
 
 /* list of event spec */
@@ -50,8 +50,8 @@ static int search_sdt_event(struct dl_phdr_info *info, size_t sz, void *data)
 	const char *name = info->dlpi_name;
 	struct mcount_event_info *mei;
 	struct list_head *spec_list = data;
-	struct uftrace_elf_data elf;
-	struct uftrace_elf_iter iter;
+	struct motrace_elf_data elf;
+	struct motrace_elf_iter iter;
 	bool found_sdt = false;
 	int ret = -1;
 
@@ -138,7 +138,7 @@ out:
 	return ret;
 }
 
-int mcount_setup_events(char *dirname, char *event_str, enum uftrace_pattern_type ptype)
+int mcount_setup_events(char *dirname, char *event_str, enum motrace_pattern_type ptype)
 {
 	int ret = 0;
 	FILE *fp;

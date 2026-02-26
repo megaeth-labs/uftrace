@@ -5,8 +5,8 @@
  *
  * Released under the GPL v2.
  */
-#ifndef UFTRACE_SCRIPT_PYTHON_H
-#define UFTRACE_SCRIPT_PYTHON_H
+#ifndef MOTRACE_SCRIPT_PYTHON_H
+#define MOTRACE_SCRIPT_PYTHON_H
 
 #include "utils/filter.h"
 
@@ -20,14 +20,14 @@ struct script_info;
 #include <Python.h>
 
 #define SCRIPT_PYTHON_ENABLED 1
-int script_init_for_python(struct script_info *info, enum uftrace_pattern_type ptype);
+int script_init_for_python(struct script_info *info, enum motrace_pattern_type ptype);
 void script_finish_for_python(void);
 
 #else /* HAVE_LIBPYTHON2 */
 
 /* Do nothing if libpython2.7.so is not installed. */
 #define SCRIPT_PYTHON_ENABLED 0
-static inline int script_init_for_python(struct script_info *info, enum uftrace_pattern_type ptype)
+static inline int script_init_for_python(struct script_info *info, enum motrace_pattern_type ptype)
 {
 	return -1;
 }
@@ -38,4 +38,4 @@ static inline void script_finish_for_python(void)
 
 #endif /* HAVE_LIBPYTHON2 */
 
-#endif /* UFTRACE_SCRIPT_PYTHON_H */
+#endif /* MOTRACE_SCRIPT_PYTHON_H */

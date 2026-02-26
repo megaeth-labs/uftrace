@@ -8,7 +8,7 @@
 #include "utils/filter.h"
 #include "utils/symbol.h"
 
-void print_debug_info(struct uftrace_dbg_info *dinfo, bool auto_args)
+void print_debug_info(struct motrace_dbg_info *dinfo, bool auto_args)
 {
 	size_t i;
 	char *argspec = NULL;
@@ -17,7 +17,7 @@ void print_debug_info(struct uftrace_dbg_info *dinfo, bool auto_args)
 	/* TODO: print enum definitions */
 
 	for (i = 0; i < dinfo->nr_locs; i++) {
-		struct uftrace_dbg_loc *loc = &dinfo->locs[i];
+		struct motrace_dbg_loc *loc = &dinfo->locs[i];
 		int idx = 0;
 
 		if (loc->sym == NULL)
@@ -47,8 +47,8 @@ void print_debug_info(struct uftrace_dbg_info *dinfo, bool auto_args)
 
 int main(int argc, char *argv[])
 {
-	struct uftrace_mmap *map;
-	struct uftrace_sym_info sinfo = {
+	struct motrace_mmap *map;
+	struct motrace_sym_info sinfo = {
 		.dirname = ".",
 		.flags = SYMTAB_FL_DEMANGLE,
 	};
@@ -56,7 +56,7 @@ int main(int argc, char *argv[])
 	char *retspec = NULL;
 	char *filename = NULL;
 	bool auto_args = false;
-	enum uftrace_pattern_type ptype = PATT_REGEX;
+	enum motrace_pattern_type ptype = PATT_REGEX;
 	int opt;
 
 	while ((opt = getopt(argc, argv, "aA:R:v")) != -1) {

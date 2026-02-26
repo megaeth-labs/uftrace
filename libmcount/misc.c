@@ -1,3 +1,5 @@
+#include <fcntl.h>
+#include <sched.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/uio.h>
@@ -10,58 +12,93 @@
 
 #include "libmcount/internal.h"
 #include "libmcount/mcount.h"
-#include "utils/tracefs.h"
 #include "utils/utils.h"
 
-/* old kernel never updates pid filter for a forked child */
+static char session_buf[2][SESSION_ID_LEN + 1];
+static int session_idx;
+/* 0 = uninit, 1 = initing, 2 = ready */
+static int session_state;
+
 void update_kernel_tid(int tid)
 {
-	char buf[8];
-
-	if (!kernel_pid_update)
-		return;
-
-	snprintf(buf, sizeof(buf), "%d", tid);
-
-	/* update pid filter for function tracing */
-	if (append_tracing_file("set_ftrace_pid", buf) < 0)
-		pr_dbg("write to kernel ftrace pid filter failed\n");
-
-	/* update pid filter for event tracing */
-	if (append_tracing_file("set_event_pid", buf) < 0)
-		pr_dbg("write to kernel ftrace pid filter failed\n");
+	(void)tid;
 }
 
 const char *mcount_session_name(void)
 {
-	static char session[SESSION_ID_LEN + 1];
-	static uint64_t session_id;
-	int fd;
+	/* ensure it has a valid session string */
+	if (__atomic_load_n(&session_state, __ATOMIC_ACQUIRE) != 2) {
+		int expected = 0;
 
-	if (!session_id) {
-		fd = open("/dev/urandom", O_RDONLY);
-		if (fd >= 0) {
-			if (read(fd, &session_id, sizeof(session_id)) != 8)
-				pr_err("reading from urandom");
+		if (__atomic_compare_exchange_n(&session_state, &expected, 1, false,
+						__ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+			uint64_t session_id = 0;
+			int fd;
 
-			close(fd);
+			fd = open("/dev/urandom", O_RDONLY);
+			if (fd >= 0) {
+				if (read(fd, &session_id, sizeof(session_id)) !=
+				    (ssize_t)sizeof(session_id))
+					pr_err("reading from urandom");
+
+				close(fd);
+			}
+			else {
+				srandom(time(NULL));
+				session_id = random();
+				session_id <<= 32;
+				session_id |= random();
+			}
+
+			snprintf(session_buf[0], sizeof(session_buf[0]), "%0*" PRIx64,
+				 SESSION_ID_LEN, session_id);
+			__atomic_store_n(&session_idx, 0, __ATOMIC_RELEASE);
+			__atomic_store_n(&session_state, 2, __ATOMIC_RELEASE);
 		}
 		else {
-			srandom(time(NULL));
-			session_id = random();
-			session_id <<= 32;
-			session_id |= random();
+			/* wait for another thread to complete initialization */
+			while (__atomic_load_n(&session_state, __ATOMIC_ACQUIRE) != 2)
+				sched_yield();
 		}
-
-		snprintf(session, sizeof(session), "%0*" PRIx64, SESSION_ID_LEN, session_id);
 	}
-	return session;
+
+	return session_buf[__atomic_load_n(&session_idx, __ATOMIC_ACQUIRE)];
 }
 
-void uftrace_send_message(int type, void *data, size_t len)
+void mcount_session_reset(void)
 {
-	struct uftrace_msg msg = {
-		.magic = UFTRACE_MSG_MAGIC,
+	int new_idx;
+	uint64_t session_id = 0;
+	int fd;
+
+	/* ensure it has initial buffers/state */
+	mcount_session_name();
+
+	new_idx = __atomic_load_n(&session_idx, __ATOMIC_RELAXED) ^ 1;
+
+	fd = open("/dev/urandom", O_RDONLY);
+	if (fd >= 0) {
+		if (read(fd, &session_id, sizeof(session_id)) != (ssize_t)sizeof(session_id))
+			pr_err("reading from urandom");
+
+		close(fd);
+	}
+	else {
+		srandom(time(NULL));
+		session_id = random();
+		session_id <<= 32;
+		session_id |= random();
+	}
+
+	snprintf(session_buf[new_idx], sizeof(session_buf[new_idx]), "%0*" PRIx64, SESSION_ID_LEN,
+		 session_id);
+	__atomic_store_n(&session_idx, new_idx, __ATOMIC_RELEASE);
+}
+
+void motrace_send_message(int type, void *data, size_t len)
+{
+	struct motrace_msg msg = {
+		.magic = MOTRACE_MSG_MAGIC,
 		.type = type,
 		.len = len,
 	};

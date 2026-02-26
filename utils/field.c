@@ -108,7 +108,7 @@ static bool check_field_name(struct display_field *field, const char *name)
 	return false;
 }
 
-void setup_field(struct list_head *output_fields, struct uftrace_opts *opts,
+void setup_field(struct list_head *output_fields, struct motrace_opts *opts,
 		 setup_default_field_t setup_default_field, struct display_field *field_table[],
 		 size_t field_table_size)
 {
@@ -163,8 +163,8 @@ void setup_field(struct list_head *output_fields, struct uftrace_opts *opts,
 		}
 
 		if (i == field_table_size) {
-			pr_out("uftrace: Unknown field name '%s'\n", p);
-			pr_out("uftrace:   Possible fields are:");
+			pr_out("motrace: Unknown field name '%s'\n", p);
+			pr_out("motrace:   Possible fields are:");
 			for (i = 0; i < field_table_size; i++)
 				pr_out(" %s", field_table[i]->name);
 			pr_out("\n");
@@ -190,7 +190,7 @@ static void print_nothing(struct field_data *fd)
 {
 }
 
-static void setup_first_field(struct list_head *head, struct uftrace_opts *opts,
+static void setup_first_field(struct list_head *head, struct motrace_opts *opts,
 			      struct display_field *p_field_table[])
 {
 	add_field(head, p_field_table[0]);
@@ -219,7 +219,7 @@ static struct display_field *test_field_table[] = {
 TEST_CASE(field_setup_default)
 {
 	LIST_HEAD(output_fields);
-	struct uftrace_opts opts = {
+	struct motrace_opts opts = {
 		.fields = NULL,
 	};
 
@@ -238,7 +238,7 @@ TEST_CASE(field_setup_default)
 TEST_CASE(field_setup_default_plus)
 {
 	LIST_HEAD(output_fields);
-	struct uftrace_opts opts = {
+	struct motrace_opts opts = {
 		.fields = "+abc",
 	};
 
@@ -258,7 +258,7 @@ TEST_CASE(field_setup_default_plus)
 TEST_CASE(field_setup_list)
 {
 	LIST_HEAD(output_fields);
-	struct uftrace_opts opts = {
+	struct motrace_opts opts = {
 		.fields = "bar,foo",
 	};
 
@@ -278,7 +278,7 @@ TEST_CASE(field_setup_list)
 TEST_CASE(field_setup_list_alias)
 {
 	LIST_HEAD(output_fields);
-	struct uftrace_opts opts = {
+	struct motrace_opts opts = {
 		.fields = "baz,xyz",
 	};
 

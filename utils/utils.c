@@ -13,18 +13,20 @@
 #include <libunwind.h>
 #endif
 
-#include "uftrace.h"
+#include "motrace.h"
 #include "utils/kernel.h"
 #include "utils/utils.h"
 
-volatile bool uftrace_done;
+uint64_t tsc_freq_mhz;
 
-/* default uftrace options to be applied for analysis commands */
+volatile bool motrace_done;
+
+/* default motrace options to be applied for analysis commands */
 struct strv default_opts = STRV_INIT;
 
 void sighandler(int sig)
 {
-	uftrace_done = true;
+	motrace_done = true;
 }
 
 void setup_signal(void)
@@ -201,12 +203,12 @@ failed:
 	return ret;
 }
 
-static bool is_uftrace_directory(const char *path)
+static bool is_motrace_directory(const char *path)
 {
 	int fd;
 	bool ret = false;
 	char *info_path = NULL;
-	char sig[UFTRACE_MAGIC_LEN] = {
+	char sig[MOTRACE_MAGIC_LEN] = {
 		0,
 	};
 
@@ -216,14 +218,14 @@ static bool is_uftrace_directory(const char *path)
 	free(info_path);
 
 	if (fd != -1) {
-		if (read(fd, sig, UFTRACE_MAGIC_LEN) != UFTRACE_MAGIC_LEN) {
+		if (read(fd, sig, MOTRACE_MAGIC_LEN) != MOTRACE_MAGIC_LEN) {
 			/*
 			 * partial read() will return false anyway
 			 * since memcmp() below cannot success.
 			 */
 		}
 		close(fd);
-		return !memcmp(sig, UFTRACE_MAGIC_STR, UFTRACE_MAGIC_LEN);
+		return !memcmp(sig, MOTRACE_MAGIC_STR, MOTRACE_MAGIC_LEN);
 	}
 
 	/* if "info" file is missing, also check that there is "default.opts" */
@@ -261,7 +263,7 @@ static bool can_remove_directory(const char *path)
 	if (access(path, F_OK) != 0)
 		return false;
 
-	return is_uftrace_directory(path) || is_empty_directory(path);
+	return is_motrace_directory(path) || is_empty_directory(path);
 }
 
 static bool create_default_opts(const char *dirname)
@@ -401,7 +403,7 @@ void setup_clock_id(const char *clock_str)
 	}
 }
 
-bool check_time_range(struct uftrace_time_range *range, uint64_t timestamp)
+bool check_time_range(struct motrace_time_range *range, uint64_t timestamp)
 {
 	/* maybe it's called before first timestamp set */
 	if (!range->first)
@@ -926,7 +928,7 @@ void free_parsed_cmdline(char **argv)
  *    mcount.py               | $PWD
  *    tests/mcount.py         | $PWD/tests
  *    ./tests/mcount.py       | $PWD/./tests
- *    /root/uftrace/mcount.py | /root/uftrace
+ *    /root/motrace/mcount.py | /root/motrace
  */
 char *absolute_dirname(const char *path, char *resolved_path)
 {
@@ -937,7 +939,7 @@ char *absolute_dirname(const char *path, char *resolved_path)
 	return resolved_path;
 }
 
-char *uftrace_strerror(int errnum, char *buf, size_t buflen)
+char *motrace_strerror(int errnum, char *buf, size_t buflen)
 {
 	long result = (long)strerror_r(errnum, buf, buflen);
 
@@ -1041,13 +1043,13 @@ TEST_CASE(utils_parse_cmdline)
 	TEST_EQ(cmdv, NULL);
 
 	pr_dbg("parse_cmdline() should handle quoted stringss\n");
-	cmdv = parse_cmdline("uftrace recv --run-cmd 'uftrace replay'", &argc);
+	cmdv = parse_cmdline("motrace recv --run-cmd 'motrace replay'", &argc);
 	TEST_NE(cmdv, NULL);
 	TEST_EQ(argc, 4);
-	TEST_STREQ(cmdv[0], "uftrace");
+	TEST_STREQ(cmdv[0], "motrace");
 	TEST_STREQ(cmdv[1], "recv");
 	TEST_STREQ(cmdv[2], "--run-cmd");
-	TEST_STREQ(cmdv[3], "uftrace replay");
+	TEST_STREQ(cmdv[3], "motrace replay");
 	free_parsed_cmdline(cmdv);
 
 	return TEST_OK;

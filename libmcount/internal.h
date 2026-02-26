@@ -6,8 +6,8 @@
  * Released under the GPL v2.
  */
 
-#ifndef UFTRACE_MCOUNT_INTERNAL_H
-#define UFTRACE_MCOUNT_INTERNAL_H
+#ifndef MOTRACE_MCOUNT_INTERNAL_H
+#define MOTRACE_MCOUNT_INTERNAL_H
 
 #include <inttypes.h>
 #include <link.h>
@@ -23,7 +23,7 @@
 #endif
 
 #include "mcount-arch.h"
-#include "uftrace.h"
+#include "motrace.h"
 #include "utils/compiler.h"
 #include "utils/filter.h"
 #include "utils/rbtree.h"
@@ -142,6 +142,11 @@ static inline void finish_mem_region(struct mcount_mem_regions *regions)
  * not filtered out so that we can keep proper depth in the output.
  */
 struct mcount_thread_data {
+	bool need_record;
+	int depth;
+	int marked_depth;
+	unsigned mo_session_seq;
+
 	int tid;
 	int idx;
 	int record_idx;
@@ -175,17 +180,11 @@ static inline void mcount_restore_arch_context(struct mcount_arch_context *ctx)
 }
 #endif
 
-#ifdef SINGLE_THREAD
-#define TLS
+#define TLS _Thread_local
 #define get_thread_data() &mtd
 #define check_thread_data(mtdp) (mtdp->rstack == NULL)
-#else
-#define TLS __thread
-#define get_thread_data() pthread_getspecific(mtd_key)
-#define check_thread_data(mtdp) (mtdp == NULL)
-#endif
 
-extern TLS struct mcount_thread_data mtd;
+extern TLS struct mcount_thread_data mtd __attribute__((tls_model("initial-exec")));
 
 void __mcount_guard_recursion(struct mcount_thread_data *mtdp);
 void __mcount_unguard_recursion(struct mcount_thread_data *mtdp);
@@ -204,9 +203,10 @@ extern bool kernel_pid_update;
 extern bool mcount_auto_recover;
 extern bool mcount_estimate_return;
 extern bool mcount_enabled;
-extern struct uftrace_sym_info mcount_sym_info;
-extern struct uftrace_filter_setting mcount_filter_setting;
-extern struct uftrace_triggers_info *mcount_triggers;
+extern bool mcount_offcpu;
+extern struct motrace_sym_info mcount_sym_info;
+extern struct motrace_filter_setting mcount_filter_setting;
+extern struct motrace_triggers_info *mcount_triggers;
 
 enum mcount_global_flag {
 	MCOUNT_GFL_SETUP = (1U << 0),
@@ -236,8 +236,8 @@ static inline void mcount_watch_setup(struct mcount_thread_data *mtdp)
 static inline void mcount_watch_release(struct mcount_thread_data *mtdp)
 {
 }
-static inline struct uftrace_triggers_info *
-mcount_trigger_init(struct uftrace_filter_setting *filter_setting)
+static inline struct motrace_triggers_info *
+mcount_trigger_init(struct motrace_filter_setting *filter_setting)
 {
 	return NULL;
 }
@@ -245,14 +245,22 @@ mcount_trigger_init(struct uftrace_filter_setting *filter_setting)
 
 static inline uint64_t mcount_gettime(void)
 {
-	struct timespec ts;
-	clock_gettime(clock_source, &ts);
-	return (uint64_t)ts.tv_sec * NSEC_PER_SEC + ts.tv_nsec;
+	return rdtsc();
 }
 
-static inline unsigned mcount_getsize(struct uftrace_sym_info *sinfo, uint64_t addr)
+static inline uint64_t mcount_get_thread_cputime_ns(void)
 {
-	struct uftrace_symbol *sym;
+	struct timespec ts;
+
+	if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts) < 0)
+		return 0;
+
+	return (uint64_t)ts.tv_sec * 1000000000ULL + ts.tv_nsec;
+}
+
+static inline unsigned mcount_getsize(struct motrace_sym_info *sinfo, uint64_t addr)
+{
+	struct motrace_symbol *sym;
 	sym = find_symtabs(sinfo, addr);
 
 	if (sym != NULL)
@@ -318,7 +326,8 @@ extern struct mcount_thread_data *mcount_prepare(void);
 
 extern void update_kernel_tid(int tid);
 extern const char *mcount_session_name(void);
-extern void uftrace_send_message(int type, void *data, size_t len);
+extern void mcount_session_reset(void);
+extern void motrace_send_message(int type, void *data, size_t len);
 extern void build_debug_domain(char *dbg_domain_str);
 
 extern void mcount_rstack_restore(struct mcount_thread_data *mtdp);
@@ -366,7 +375,7 @@ struct plthook_data {
 	/* start address of PLT code (PLT0) */
 	unsigned long plt_addr;
 	/* symbol table for PLT functions */
-	struct uftrace_symtab dsymtab;
+	struct motrace_symtab dsymtab;
 	/* address of global offset table (GOT) used for PLT */
 	unsigned long *pltgot_ptr;
 	/* original address of each function (resolved by dynamic linker) */
@@ -392,8 +401,8 @@ extern size_t plt_skip_nr;
 extern const char *const noplt_skip_syms[];
 extern size_t noplt_skip_nr;
 
-struct uftrace_trigger;
-struct uftrace_arg_spec;
+struct motrace_trigger;
+struct motrace_arg_spec;
 struct mcount_regs;
 
 struct mcount_arg_context {
@@ -414,22 +423,22 @@ struct mcount_arg_context {
 	struct mcount_arch_context *arch;
 };
 
-extern void mcount_arch_get_arg(struct mcount_arg_context *ctx, struct uftrace_arg_spec *spec);
-extern void mcount_arch_get_retval(struct mcount_arg_context *ctx, struct uftrace_arg_spec *spec);
+extern void mcount_arch_get_arg(struct mcount_arg_context *ctx, struct motrace_arg_spec *spec);
+extern void mcount_arch_get_retval(struct mcount_arg_context *ctx, struct motrace_arg_spec *spec);
 
 extern enum filter_result mcount_entry_filter_check(struct mcount_thread_data *mtdp,
-						    unsigned long child,
-						    struct uftrace_trigger *tr);
+						    unsigned long child, struct motrace_trigger *tr,
+						    struct mcount_regs *regs);
 extern void mcount_entry_filter_record(struct mcount_thread_data *mtdp,
-				       struct mcount_ret_stack *rstack, struct uftrace_trigger *tr,
+				       struct mcount_ret_stack *rstack, struct motrace_trigger *tr,
 				       struct mcount_regs *regs);
 extern void mcount_exit_filter_record(struct mcount_thread_data *mtdp,
 				      struct mcount_ret_stack *rstack, long *retval);
 extern int record_trace_data(struct mcount_thread_data *mtdp, struct mcount_ret_stack *mrstack,
 			     long *retval);
-extern struct uftrace_mmap *new_map(const char *path, uint64_t start, uint64_t end,
+extern struct motrace_mmap *new_map(const char *path, uint64_t start, uint64_t end,
 				    const char *prot);
-extern void record_proc_maps(char *dirname, const char *sess_id, struct uftrace_sym_info *sinfo);
+extern void record_proc_maps(char *dirname, const char *sess_id, struct motrace_sym_info *sinfo);
 extern void mcount_rstack_inject_return(struct mcount_thread_data *mtdp,
 					unsigned long *frame_pointer, unsigned long addr);
 
@@ -439,7 +448,7 @@ extern void save_argument(struct mcount_thread_data *mtdp, struct mcount_ret_sta
 void save_retval(struct mcount_thread_data *mtdp, struct mcount_ret_stack *rstack, long *retval);
 void save_trigger_read(struct mcount_thread_data *mtdp, struct mcount_ret_stack *rstack,
 		       enum trigger_read_type type, bool diff);
-struct uftrace_triggers_info *mcount_trigger_init(struct uftrace_filter_setting *filter_setting);
+struct motrace_triggers_info *mcount_trigger_init(struct motrace_filter_setting *filter_setting);
 #endif /* DISABLE_MCOUNT_FILTER */
 
 bool check_mem_region(struct mcount_arg_context *ctx, unsigned long addr);
@@ -459,7 +468,7 @@ struct mcount_event_info {
 	struct list_head list;
 };
 
-int mcount_setup_events(char *dirname, char *event_str, enum uftrace_pattern_type ptype);
+int mcount_setup_events(char *dirname, char *event_str, enum motrace_pattern_type ptype);
 struct mcount_event_info *mcount_lookup_event(unsigned long addr);
 int mcount_save_event(struct mcount_event_info *mei);
 void mcount_finish_events(void);
@@ -469,8 +478,8 @@ int mcount_arch_enable_event(struct mcount_event_info *mei);
 
 void mcount_hook_functions(void);
 
-int read_pmu_event(struct mcount_thread_data *mtdp, enum uftrace_event_id id, void *buf);
-void release_pmu_event(struct mcount_thread_data *mtdp, enum uftrace_event_id id);
+int read_pmu_event(struct mcount_thread_data *mtdp, enum motrace_event_id id, void *buf);
+void release_pmu_event(struct mcount_thread_data *mtdp, enum motrace_event_id id);
 void finish_pmu_event(struct mcount_thread_data *mtdp);
 
 bool mcount_is_main_executable(const char *filename, const char *exename);
@@ -478,6 +487,11 @@ bool mcount_is_main_executable(const char *filename, const char *exename);
 int agent_spawn(void);
 int agent_kill(void);
 
-void swap_triggers(struct uftrace_triggers_info **old, struct uftrace_triggers_info *new);
+void swap_triggers(struct motrace_triggers_info **old, struct motrace_triggers_info *new);
 
-#endif /* UFTRACE_MCOUNT_INTERNAL_H */
+/* mo-mode dynamic attach (XRay sled patching) */
+int mcount_mo_xray_patch(bool enable);
+int mcount_mo_attach(void *data, size_t len);
+int mcount_mo_detach(void);
+
+#endif /* MOTRACE_MCOUNT_INTERNAL_H */

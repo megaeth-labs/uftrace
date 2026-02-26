@@ -17,34 +17,6 @@ else ifneq ($(wildcard $(objdir)/check-deps/cc_has_mno_sse2),)
   LIB_CFLAGS += -mno-sse -mno-sse2
 endif
 
-ifneq ($(wildcard $(objdir)/check-deps/have_libpython3),)
-  # libpython3 provides an embed version of pkg-config file since python3.8
-  ifeq ($(shell pkg-config python3-embed --exists 2> /dev/null; echo $$?), 0)
-    EMBED := -embed
-  endif
-  COMMON_CFLAGS += -DHAVE_LIBPYTHON3
-  COMMON_CFLAGS += $(shell pkg-config python3$(EMBED) --cflags)
-  COMMON_CFLAGS += -DLIBPYTHON_VERSION=$(shell pkg-config python3$(EMBED) --modversion)
-  PYTHON_LDFLAGS = $(shell pkg-config python3$(EMBED) --libs)
-else ifneq ($(wildcard $(objdir)/check-deps/have_libpython2.7),)
-  COMMON_CFLAGS += -DHAVE_LIBPYTHON2
-  COMMON_CFLAGS += -I/usr/include/python2.7
-  COMMON_CFLAGS += -DLIBPYTHON_VERSION="2.7"
-  PYTHON_LDFLAGS = -lpython2.7
-endif
-
-ifneq ($(wildcard $(objdir)/check-deps/have_libluajit),)
-  COMMON_CFLAGS += -DHAVE_LIBLUAJIT
-  COMMON_CFLAGS += $(shell pkg-config --cflags luajit)
-endif
-
-ifneq ($(wildcard $(objdir)/check-deps/perf_clockid),)
-  COMMON_CFLAGS += -DHAVE_PERF_CLOCKID
-endif
-
-ifneq ($(wildcard $(objdir)/check-deps/perf_context_switch),)
-  COMMON_CFLAGS += -DHAVE_PERF_CTXSW
-endif
 
 ifneq ($(wildcard $(objdir)/check-deps/arm_has_hardfp),)
   COMMON_CFLAGS += -DHAVE_ARM_HARDFP
@@ -52,7 +24,7 @@ endif
 
 ifneq ($(wildcard $(objdir)/check-deps/have_libncurses),)
   COMMON_CFLAGS   += -DHAVE_LIBNCURSES $(shell pkg-config --cflags ncursesw)
-  UFTRACE_LDFLAGS += $(shell pkg-config --libs ncursesw)
+  MOTRACE_LDFLAGS += $(shell pkg-config --libs ncursesw)
   TEST_LDFLAGS    += $(shell pkg-config --libs ncursesw)
 endif
 
@@ -78,15 +50,10 @@ endif
 ifneq ($(wildcard $(objdir)/check-deps/have_libcapstone),)
   COMMON_CFLAGS  += -DHAVE_LIBCAPSTONE
   COMMON_CFLAGS  += $(shell pkg-config --cflags capstone 2> /dev/null)
-  COMMON_LDFLAGS += $(shell pkg-config --libs capstone 2> /dev/null)
+  COMMON_LDFLAGS += $(shell pkg-config --libs   capstone 2> /dev/null || echo "-lcapstone")
 endif
+
 
 ifneq ($(wildcard $(objdir)/check-deps/cc_has_minline_all_stringops),)
   LIB_CFLAGS += -minline-all-stringops
-endif
-
-ifneq ($(wildcard $(objdir)/check-deps/have_libtraceevent),)
-  COMMON_CFLAGS  += -DHAVE_LIBTRACEEVENT
-  COMMON_CFLAGS  += $(shell pkg-config --cflags libtraceevent 2> /dev/null)
-  COMMON_LDFLAGS += $(shell pkg-config --libs libtraceevent 2> /dev/null)
 endif

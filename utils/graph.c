@@ -10,7 +10,7 @@ static void *cb_arg;
 
 static struct rb_root task_graph_root = RB_ROOT;
 
-void graph_init(struct uftrace_graph *graph, struct uftrace_session *s)
+void graph_init(struct motrace_graph *graph, struct motrace_session *s)
 {
 	memset(graph, 0, sizeof(*graph));
 	graph->sess = s;
@@ -28,15 +28,15 @@ void graph_init_callbacks(graph_fn entry_fn, graph_fn exit_fn, graph_fn event_fn
 	cb_arg = arg;
 }
 
-struct uftrace_task_graph *graph_get_task(struct uftrace_task_reader *task, size_t tg_size)
+struct motrace_task_graph *graph_get_task(struct motrace_task_reader *task, size_t tg_size)
 {
 	struct rb_node *parent = NULL;
 	struct rb_node **p = &task_graph_root.rb_node;
-	struct uftrace_task_graph *tg;
+	struct motrace_task_graph *tg;
 
 	while (*p) {
 		parent = *p;
-		tg = rb_entry(parent, struct uftrace_task_graph, link);
+		tg = rb_entry(parent, struct motrace_task_graph, link);
 
 		if (tg->task->tid == task->tid)
 			return tg;
@@ -56,12 +56,12 @@ struct uftrace_task_graph *graph_get_task(struct uftrace_task_reader *task, size
 	return tg;
 }
 
-static int add_graph_entry(struct uftrace_task_graph *tg, char *name, size_t node_size,
-			   struct uftrace_dbg_loc *loc)
+static int add_graph_entry(struct motrace_task_graph *tg, char *name, size_t node_size,
+			   struct motrace_dbg_loc *loc)
 {
-	struct uftrace_graph_node *node = NULL;
-	struct uftrace_graph_node *curr = tg->node;
-	struct uftrace_fstack *fstack;
+	struct motrace_graph_node *node = NULL;
+	struct motrace_graph_node *curr = tg->node;
+	struct motrace_fstack *fstack;
 	static uint32_t next_id = 1;
 
 	if (tg->lost)
@@ -83,8 +83,8 @@ static int add_graph_entry(struct uftrace_task_graph *tg, char *name, size_t nod
 	}
 
 	if (list_no_entry(node, &curr->head, list)) {
-		struct uftrace_trigger tr;
-		struct uftrace_session *sess = tg->graph->sess;
+		struct motrace_trigger tr;
+		struct motrace_session *sess = tg->graph->sess;
 
 		node = xzalloc(node_size);
 
@@ -99,10 +99,10 @@ static int add_graph_entry(struct uftrace_task_graph *tg, char *name, size_t nod
 
 		node->loc = loc;
 
-		if (sess && uftrace_match_filter(fstack->addr, &sess->fixups, &tr)) {
-			struct uftrace_symbol *sym;
-			struct uftrace_special_node *snode;
-			enum uftrace_graph_node_type type = NODE_T_NORMAL;
+		if (sess && motrace_match_filter(fstack->addr, &sess->fixups, &tr)) {
+			struct motrace_symbol *sym;
+			struct motrace_special_node *snode;
+			enum motrace_graph_node_type type = NODE_T_NORMAL;
 
 			sym = find_symtabs(&sess->sym_info, fstack->addr);
 			if (sym == NULL)
@@ -136,10 +136,10 @@ out:
 	return 0;
 }
 
-static int add_graph_exit(struct uftrace_task_graph *tg)
+static int add_graph_exit(struct motrace_task_graph *tg)
 {
-	struct uftrace_fstack *fstack = fstack_get(tg->task, tg->task->stack_count);
-	struct uftrace_graph_node *node = tg->node;
+	struct motrace_fstack *fstack = fstack_get(tg->task, tg->task->stack_count);
+	struct motrace_graph_node *node = tg->node;
 
 	if (node == NULL || fstack == NULL)
 		return -1;
@@ -156,7 +156,7 @@ static int add_graph_exit(struct uftrace_task_graph *tg)
 	}
 
 	if (node->addr != fstack->addr) {
-		struct uftrace_special_node *snode, *tmp;
+		struct motrace_special_node *snode, *tmp;
 
 		list_for_each_entry_safe(snode, tmp, &tg->graph->special_nodes, list) {
 			if (snode->node->addr == tg->task->rstack->addr &&
@@ -174,6 +174,8 @@ static int add_graph_exit(struct uftrace_task_graph *tg)
 out:
 	node->time += fstack->total_time;
 	node->child_time += fstack->child_time;
+	node->cpu_time += fstack->cpu_time;
+	node->child_cpu_time += fstack->child_cpu_time;
 
 	if (exit_cb)
 		exit_cb(tg, cb_arg);
@@ -183,9 +185,9 @@ out:
 	return 0;
 }
 
-static int add_graph_event(struct uftrace_task_graph *tg, size_t node_size)
+static int add_graph_event(struct motrace_task_graph *tg, size_t node_size)
 {
-	struct uftrace_record *rec = tg->task->rstack;
+	struct motrace_record *rec = tg->task->rstack;
 
 	if (event_cb)
 		event_cb(tg, cb_arg);
@@ -207,23 +209,23 @@ static int add_graph_event(struct uftrace_task_graph *tg, size_t node_size)
 	return -1;
 }
 
-/* graph_add_node is not thread-safe due to static id of uftrace_graph_node */
-int graph_add_node(struct uftrace_task_graph *tg, int type, char *name, size_t node_size,
-		   struct uftrace_dbg_loc *loc)
+/* graph_add_node is not thread-safe due to static id of motrace_graph_node */
+int graph_add_node(struct motrace_task_graph *tg, int type, char *name, size_t node_size,
+		   struct motrace_dbg_loc *loc)
 {
-	if (type == UFTRACE_ENTRY)
+	if (type == MOTRACE_ENTRY)
 		return add_graph_entry(tg, name, node_size, loc);
-	else if (type == UFTRACE_EXIT)
+	else if (type == MOTRACE_EXIT)
 		return add_graph_exit(tg);
-	else if (type == UFTRACE_EVENT)
+	else if (type == MOTRACE_EVENT)
 		return add_graph_event(tg, node_size);
 	else
 		return 0;
 }
 
-struct uftrace_graph_node *graph_find_node(struct uftrace_graph_node *parent, uint64_t addr)
+struct motrace_graph_node *graph_find_node(struct motrace_graph_node *parent, uint64_t addr)
 {
-	struct uftrace_graph_node *node;
+	struct motrace_graph_node *node;
 
 	list_for_each_entry(node, &parent->head, list) {
 		if (addr == node->addr)
@@ -233,9 +235,9 @@ struct uftrace_graph_node *graph_find_node(struct uftrace_graph_node *parent, ui
 	return NULL;
 }
 
-static void graph_destroy_node(struct uftrace_graph_node *node)
+static void graph_destroy_node(struct motrace_graph_node *node)
 {
-	struct uftrace_graph_node *child, *tmp;
+	struct motrace_graph_node *child, *tmp;
 
 	list_for_each_entry_safe(child, tmp, &node->head, list)
 		graph_destroy_node(child);
@@ -245,10 +247,10 @@ static void graph_destroy_node(struct uftrace_graph_node *node)
 	free(node);
 }
 
-void graph_destroy(struct uftrace_graph *graph)
+void graph_destroy(struct motrace_graph *graph)
 {
-	struct uftrace_graph_node *node, *tmp;
-	struct uftrace_special_node *snode, *stmp;
+	struct motrace_graph_node *node, *tmp;
+	struct motrace_special_node *snode, *stmp;
 
 	list_for_each_entry_safe(node, tmp, &graph->root.head, list)
 		graph_destroy_node(node);
@@ -262,11 +264,11 @@ void graph_destroy(struct uftrace_graph *graph)
 void graph_remove_task(void)
 {
 	struct rb_node *node;
-	struct uftrace_task_graph *tg;
+	struct motrace_task_graph *tg;
 
 	while (!RB_EMPTY_ROOT(&task_graph_root)) {
 		node = rb_first(&task_graph_root);
-		tg = rb_entry(node, struct uftrace_task_graph, link);
+		tg = rb_entry(node, struct motrace_task_graph, link);
 
 		rb_erase(node, &task_graph_root);
 		free(tg);
@@ -283,12 +285,12 @@ struct test_data {
 	const char *name;
 };
 
-static void setup_fstack_and_graph(struct uftrace_graph *graph, struct test_data *data, size_t len)
+static void setup_fstack_and_graph(struct motrace_graph *graph, struct test_data *data, size_t len)
 {
 	size_t i;
-	struct uftrace_task_graph *tg;
-	struct uftrace_graph_node *node;
-	struct uftrace_task_reader task = {
+	struct motrace_task_graph *tg;
+	struct motrace_graph_node *node;
+	struct motrace_task_reader task = {
 		.tid = 1234,
 	};
 
@@ -300,11 +302,11 @@ static void setup_fstack_and_graph(struct uftrace_graph *graph, struct test_data
 	task.func_stack = xcalloc(len, sizeof(*task.func_stack));
 
 	for (i = 0; i < len; i++) {
-		struct uftrace_fstack *fstack = NULL;
+		struct motrace_fstack *fstack = NULL;
 
-		if (data[i].type == UFTRACE_ENTRY)
+		if (data[i].type == MOTRACE_ENTRY)
 			fstack = &task.func_stack[task.stack_count++];
-		else if (data[i].type == UFTRACE_EXIT)
+		else if (data[i].type == MOTRACE_EXIT)
 			fstack = &task.func_stack[--task.stack_count];
 
 		if (fstack) {
@@ -321,8 +323,8 @@ static void setup_fstack_and_graph(struct uftrace_graph *graph, struct test_data
 
 TEST_CASE(graph_basic)
 {
-	struct uftrace_graph graph;
-	struct uftrace_graph_node *node;
+	struct motrace_graph graph;
+	struct motrace_graph_node *node;
 	/*
 	 * (root)
 	 *  +-- (1) foo
@@ -332,42 +334,42 @@ TEST_CASE(graph_basic)
 	 */
 	struct test_data data[] = {
 		{
-			UFTRACE_ENTRY,
+			MOTRACE_ENTRY,
 			0x1000,
 			0,
 			0,
 			"foo",
 		},
 		{
-			UFTRACE_EXIT,
+			MOTRACE_EXIT,
 			0x1000,
 			100,
 			0,
 			"foo",
 		},
 		{
-			UFTRACE_ENTRY,
+			MOTRACE_ENTRY,
 			0x2000,
 			0,
 			0,
 			"bar",
 		},
 		{
-			UFTRACE_ENTRY,
+			MOTRACE_ENTRY,
 			0x3000,
 			0,
 			0,
 			"baz",
 		},
 		{
-			UFTRACE_EXIT,
+			MOTRACE_EXIT,
 			0x3000,
 			200,
 			0,
 			"baz",
 		},
 		{
-			UFTRACE_EXIT,
+			MOTRACE_EXIT,
 			0x2000,
 			500,
 			200,

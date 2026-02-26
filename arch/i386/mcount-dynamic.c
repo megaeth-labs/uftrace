@@ -59,7 +59,7 @@ void mcount_cleanup_trampoline(struct mcount_dynamic_info *mdi)
 		pr_err("cannot restore trampoline due to protection");
 }
 
-void mcount_arch_find_module(struct mcount_dynamic_info *mdi, struct uftrace_symtab *symtab)
+void mcount_arch_find_module(struct mcount_dynamic_info *mdi, struct motrace_symtab *symtab)
 {
 	unsigned i = 0;
 
@@ -67,7 +67,7 @@ void mcount_arch_find_module(struct mcount_dynamic_info *mdi, struct uftrace_sym
 
 	/* check first few functions have fentry signature */
 	for (i = 0; i < symtab->nr_sym; i++) {
-		struct uftrace_symbol *sym = &symtab->sym[i];
+		struct motrace_symbol *sym = &symtab->sym[i];
 		void *code_addr = (unsigned char *)((uintptr_t)(sym->addr + mdi->map->start));
 
 		if (sym->type != ST_LOCAL_FUNC && sym->type != ST_GLOBAL_FUNC)
@@ -96,7 +96,7 @@ void mcount_arch_find_module(struct mcount_dynamic_info *mdi, struct uftrace_sym
 	}
 
 out:
-	pr_dbg("dynamic patch type: %s: %d (%s)\n", uftrace_basename(mdi->map->libname), mdi->type,
+	pr_dbg("dynamic patch type: %s: %d (%s)\n", motrace_basename(mdi->map->libname), mdi->type,
 	       mdi_type_names[mdi->type]);
 }
 
@@ -111,7 +111,7 @@ static unsigned long get_target_addr(struct mcount_dynamic_info *mdi, unsigned l
 	return 0;
 }
 
-static int patch_fentry_func(struct mcount_dynamic_info *mdi, struct uftrace_symbol *sym)
+static int patch_fentry_func(struct mcount_dynamic_info *mdi, struct motrace_symbol *sym)
 {
 	unsigned char *insn = (unsigned char *)((uintptr_t)(sym->addr + mdi->map->start));
 	unsigned int target_addr;
@@ -137,7 +137,7 @@ static int patch_fentry_func(struct mcount_dynamic_info *mdi, struct uftrace_sym
 	return 0;
 }
 
-int mcount_patch_func(struct mcount_dynamic_info *mdi, struct uftrace_symbol *sym,
+int mcount_patch_func(struct mcount_dynamic_info *mdi, struct motrace_symbol *sym,
 		      struct mcount_disasm_engine *disasm, unsigned min_size)
 {
 	int result = INSTRUMENT_SKIPPED;

@@ -16,12 +16,12 @@
 #include "utils/compiler.h"
 #include "utils/utils.h"
 
-extern struct uftrace_sym_info mcount_sym_info;
+extern struct motrace_sym_info mcount_sym_info;
 
 struct dlopen_base_data {
 	const char *filename;
 	struct mcount_thread_data *mtdp;
-	struct uftrace_triggers_info *triggers;
+	struct motrace_triggers_info *triggers;
 	uint64_t timestamp;
 	void *handle;
 };
@@ -29,7 +29,7 @@ struct dlopen_base_data {
 static void send_dlopen_msg(struct mcount_thread_data *mtdp, const char *sess_id,
 			    uint64_t timestamp, uint64_t base_addr, const char *libname)
 {
-	struct uftrace_msg_dlopen dlop = {
+	struct motrace_msg_dlopen dlop = {
 		.task = {
 			.time = timestamp,
 			.pid = getpid(),
@@ -38,9 +38,9 @@ static void send_dlopen_msg(struct mcount_thread_data *mtdp, const char *sess_id
 		.base_addr = base_addr,
 		.namelen = strlen(libname),
 	};
-	struct uftrace_msg msg = {
-		.magic = UFTRACE_MSG_MAGIC,
-		.type = UFTRACE_MSG_DLOPEN,
+	struct motrace_msg msg = {
+		.magic = MOTRACE_MSG_MAGIC,
+		.type = MOTRACE_MSG_DLOPEN,
 		.len = sizeof(dlop) + dlop.namelen,
 	};
 	struct iovec iov[3] = {
@@ -73,7 +73,7 @@ static void send_dlopen_msg(struct mcount_thread_data *mtdp, const char *sess_id
 static int dlopen_base_callback(struct dl_phdr_info *info, size_t size, void *arg)
 {
 	struct dlopen_base_data *data = arg;
-	struct uftrace_mmap *map;
+	struct motrace_mmap *map;
 	char buf[PATH_MAX];
 	char *p;
 
@@ -88,7 +88,7 @@ static int dlopen_base_callback(struct dl_phdr_info *info, size_t size, void *ar
 	if (p == NULL)
 		p = buf;
 
-	if (find_map_by_name(&mcount_sym_info, uftrace_basename(p)))
+	if (find_map_by_name(&mcount_sym_info, motrace_basename(p)))
 		return 0;
 
 	/* report a library not found in the session maps */
@@ -187,15 +187,15 @@ void mcount_rstack_rehook_exception(struct mcount_thread_data *mtdp, unsigned lo
 	mcount_rstack_rehook(mtdp);
 }
 
-static char **collect_uftrace_envp(void)
+static char **collect_motrace_envp(void)
 {
 	size_t n = 0;
 	size_t i, k;
 	char **envp;
 
-#define ENV(_name) "UFTRACE_" #_name
+#define ENV(_name) "MOTRACE_" #_name
 
-	const char *const uftrace_env[] = {
+	const char *const motrace_env[] = {
 		ENV(FILTER),
 		ENV(TRIGGER),
 		ENV(ARGUMENT),
@@ -210,6 +210,7 @@ static char **collect_uftrace_envp(void)
 		ENV(MAX_STACK),
 		ENV(COLOR),
 		ENV(THRESHOLD),
+		ENV(OFFCPU),
 		ENV(DEMANGLE),
 		ENV(PLTHOOK),
 		ENV(PATCH),
@@ -221,29 +222,29 @@ static char **collect_uftrace_envp(void)
 		ENV(DIR),
 		ENV(KERNEL_PID_UPDATE),
 		ENV(PATTERN),
-		/* not uftrace-specific, but necessary to run */
+		/* not motrace-specific, but necessary to run */
 		"LD_PRELOAD",
 		"LD_LIBRARY_PATH",
 	};
 
 #undef ENV
 
-	for (i = 0; i < ARRAY_SIZE(uftrace_env); i++) {
-		if (getenv(uftrace_env[i]))
+	for (i = 0; i < ARRAY_SIZE(motrace_env); i++) {
+		if (getenv(motrace_env[i]))
 			n++;
 	}
 
 	envp = xcalloc(n + 2, sizeof(*envp));
 
-	for (i = k = 0; i < ARRAY_SIZE(uftrace_env); i++) {
+	for (i = k = 0; i < ARRAY_SIZE(motrace_env); i++) {
 		char *env_str;
 		char *env_val;
 
-		env_val = getenv(uftrace_env[i]);
+		env_val = getenv(motrace_env[i]);
 		if (env_val == NULL)
 			continue;
 
-		xasprintf(&env_str, "%s=%s", uftrace_env[i], env_val);
+		xasprintf(&env_str, "%s=%s", motrace_env[i], env_val);
 		envp[k++] = env_str;
 	}
 
@@ -547,7 +548,7 @@ __visible_default void *dlopen(const char *filename, int flags)
 __visible_default int dlclose(void *handle)
 {
 	struct mcount_thread_data *mtdp;
-	struct uftrace_mmap *map;
+	struct motrace_mmap *map;
 	int ret;
 
 	if (unlikely(real_dlopen == NULL))
@@ -614,14 +615,14 @@ __visible_default int posix_spawn(pid_t *pid, const char *path,
 				  const posix_spawnattr_t *attr, char *const argv[],
 				  char *const envp[])
 {
-	char **uftrace_envp;
+	char **motrace_envp;
 	char **new_envp;
 
 	if (unlikely(real_posix_spawn == NULL))
 		mcount_hook_functions();
 
-	uftrace_envp = collect_uftrace_envp();
-	new_envp = merge_envp(envp, uftrace_envp);
+	motrace_envp = collect_motrace_envp();
+	new_envp = merge_envp(envp, motrace_envp);
 
 	pr_dbg("%s is called for '%s'\n", __func__, path);
 	return real_posix_spawn(pid, path, actions, attr, argv, new_envp);
@@ -632,14 +633,14 @@ __visible_default int posix_spawnp(pid_t *pid, const char *file,
 				   const posix_spawnattr_t *attr, char *const argv[],
 				   char *const envp[])
 {
-	char **uftrace_envp;
+	char **motrace_envp;
 	char **new_envp;
 
 	if (unlikely(real_posix_spawnp == NULL))
 		mcount_hook_functions();
 
-	uftrace_envp = collect_uftrace_envp();
-	new_envp = merge_envp(envp, uftrace_envp);
+	motrace_envp = collect_motrace_envp();
+	new_envp = merge_envp(envp, motrace_envp);
 
 	pr_dbg("%s is called for '%s'\n", __func__, file);
 	return real_posix_spawnp(pid, file, actions, attr, argv, new_envp);
@@ -647,14 +648,14 @@ __visible_default int posix_spawnp(pid_t *pid, const char *file,
 
 __visible_default int execve(const char *path, char *const argv[], char *const envp[])
 {
-	char **uftrace_envp;
+	char **motrace_envp;
 	char **new_envp;
 
 	if (unlikely(real_execve == NULL))
 		mcount_hook_functions();
 
-	uftrace_envp = collect_uftrace_envp();
-	new_envp = merge_envp(envp, uftrace_envp);
+	motrace_envp = collect_motrace_envp();
+	new_envp = merge_envp(envp, motrace_envp);
 
 	pr_dbg("%s is called for '%s'\n", __func__, path);
 	return real_execve(path, argv, new_envp);
@@ -662,14 +663,14 @@ __visible_default int execve(const char *path, char *const argv[], char *const e
 
 __visible_default int execvpe(const char *file, char *const argv[], char *const envp[])
 {
-	char **uftrace_envp;
+	char **motrace_envp;
 	char **new_envp;
 
 	if (unlikely(real_execvpe == NULL))
 		mcount_hook_functions();
 
-	uftrace_envp = collect_uftrace_envp();
-	new_envp = merge_envp(envp, uftrace_envp);
+	motrace_envp = collect_motrace_envp();
+	new_envp = merge_envp(envp, motrace_envp);
 
 	pr_dbg("%s is called for '%s'\n", __func__, file);
 	return real_execvpe(file, argv, new_envp);
@@ -677,14 +678,14 @@ __visible_default int execvpe(const char *file, char *const argv[], char *const 
 
 __visible_default int fexecve(int fd, char *const argv[], char *const envp[])
 {
-	char **uftrace_envp;
+	char **motrace_envp;
 	char **new_envp;
 
 	if (unlikely(real_fexecve == NULL))
 		mcount_hook_functions();
 
-	uftrace_envp = collect_uftrace_envp();
-	new_envp = merge_envp(envp, uftrace_envp);
+	motrace_envp = collect_motrace_envp();
+	new_envp = merge_envp(envp, motrace_envp);
 
 	pr_dbg("%s is called for fd %d\n", __func__, fd);
 	return real_fexecve(fd, argv, new_envp);
@@ -724,25 +725,25 @@ TEST_CASE(mcount_wrap_dlopen)
 
 TEST_CASE(mcount_env_check)
 {
-	char **uftrace_envp;
+	char **motrace_envp;
 	char **new_envp;
 	int old1_cnt, old2_cnt, new_cnt;
 	int i;
 
-	pr_dbg("collecting environ related to uftrace\n");
-	uftrace_envp = collect_uftrace_envp();
-	old1_cnt = count_envp(uftrace_envp);
+	pr_dbg("collecting environ related to motrace\n");
+	motrace_envp = collect_motrace_envp();
+	old1_cnt = count_envp(motrace_envp);
 	old2_cnt = count_envp(environ);
 
-	pr_dbg("merging uftrace envp to the existing one\n");
-	new_envp = merge_envp(environ, uftrace_envp);
+	pr_dbg("merging motrace envp to the existing one\n");
+	new_envp = merge_envp(environ, motrace_envp);
 	new_cnt = count_envp(new_envp);
 
 	TEST_EQ(old1_cnt + old2_cnt, new_cnt);
 
 	for (i = 0; i < old1_cnt; i++)
-		free(uftrace_envp[i]);
-	free(uftrace_envp);
+		free(motrace_envp[i]);
+	free(motrace_envp);
 	free(new_envp);
 
 	return TEST_OK;

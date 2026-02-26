@@ -1,5 +1,5 @@
-#ifndef UFTRACE_SYMBOL_RAWELF_H
-#define UFTRACE_SYMBOL_RAWELF_H
+#ifndef MOTRACE_SYMBOL_RAWELF_H
+#define MOTRACE_SYMBOL_RAWELF_H
 
 #include <elf.h>
 #include <stdbool.h>
@@ -44,7 +44,7 @@ typedef ElfT(Rela) Elf_Rela;
 #define ELF_R_TYPE(i) ELF_M(R_TYPE)(i)
 #endif
 
-struct uftrace_elf_data {
+struct motrace_elf_data {
 	int fd;
 	void *file_map;
 	size_t file_size;
@@ -53,7 +53,7 @@ struct uftrace_elf_data {
 	bool has_shdr;
 };
 
-struct uftrace_elf_iter {
+struct motrace_elf_iter {
 	size_t i;
 	size_t nr;
 
@@ -161,18 +161,18 @@ struct uftrace_elf_iter {
 	     (iter)->i += sizeof((iter)->nhdr) + ALIGN((iter)->nhdr.n_namesz, 4) +                 \
 			  ALIGN((iter)->nhdr.n_descsz, 4))
 
-int elf_init(const char *filename, struct uftrace_elf_data *elf);
-void elf_finish(struct uftrace_elf_data *elf);
+int elf_init(const char *filename, struct motrace_elf_data *elf);
+void elf_finish(struct motrace_elf_data *elf);
 
-static inline int elf_retry(const char *filename, struct uftrace_elf_data *elf)
+static inline int elf_retry(const char *filename, struct motrace_elf_data *elf)
 {
 	/* no retry */
 	return 0;
 }
 
-void elf_get_strtab(struct uftrace_elf_data *elf, struct uftrace_elf_iter *iter, int shidx);
-void elf_get_secdata(struct uftrace_elf_data *elf, struct uftrace_elf_iter *iter);
-void elf_read_secdata(struct uftrace_elf_data *elf, struct uftrace_elf_iter *iter, unsigned offset,
+void elf_get_strtab(struct motrace_elf_data *elf, struct motrace_elf_iter *iter, int shidx);
+void elf_get_secdata(struct motrace_elf_data *elf, struct motrace_elf_iter *iter);
+void elf_read_secdata(struct motrace_elf_data *elf, struct motrace_elf_iter *iter, unsigned offset,
 		      void *buf, size_t len);
 
-#endif /* UFTRACE_SYMBOL_LIBELF_H */
+#endif /* MOTRACE_SYMBOL_LIBELF_H */

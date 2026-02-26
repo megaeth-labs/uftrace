@@ -1,5 +1,5 @@
-#ifndef UFTRACE_FIELD_H
-#define UFTRACE_FIELD_H
+#ifndef MOTRACE_FIELD_H
+#define MOTRACE_FIELD_H
 
 #include "utils/fstack.h"
 #include "utils/list.h"
@@ -11,8 +11,8 @@ enum align_pos {
 
 /* data for field display */
 struct field_data {
-	struct uftrace_task_reader *task;
-	struct uftrace_fstack *fstack;
+	struct motrace_task_reader *task;
+	struct motrace_fstack *fstack;
 	void *arg;
 };
 
@@ -30,6 +30,8 @@ enum display_field_id {
 
 	GRAPH_F_TOTAL_TIME = 0,
 	GRAPH_F_SELF_TIME,
+	GRAPH_F_OFFCPU_TIME,
+	GRAPH_F_OFFCPU_SELF_TIME,
 	GRAPH_F_ADDR,
 
 	GRAPH_F_TASK_TOTAL_TIME = 0,
@@ -52,6 +54,9 @@ enum display_field_id {
 	REPORT_F_TOTAL_TIME_STDV,
 	REPORT_F_SELF_TIME_STDV,
 
+	REPORT_F_OFFCPU_TOTAL_TIME,
+	REPORT_F_OFFCPU_SELF_TIME,
+
 	REPORT_F_TASK_TOTAL_TIME = 0,
 	REPORT_F_TASK_SELF_TIME,
 	REPORT_F_TASK_TID,
@@ -69,7 +74,7 @@ struct display_field {
 	const char *alias;
 };
 
-typedef void (*setup_default_field_t)(struct list_head *fields, struct uftrace_opts *,
+typedef void (*setup_default_field_t)(struct list_head *fields, struct motrace_opts *,
 				      struct display_field *p_field_table[]);
 
 static inline uint64_t effective_addr(uint64_t addr)
@@ -86,8 +91,8 @@ int print_field_data(struct list_head *output_fields, struct field_data *fd, int
 int print_empty_field(struct list_head *output_fields, int space);
 void add_field(struct list_head *output_fields, struct display_field *field);
 void del_field(struct display_field *field);
-void setup_field(struct list_head *output_fields, struct uftrace_opts *opts,
+void setup_field(struct list_head *output_fields, struct motrace_opts *opts,
 		 setup_default_field_t setup_default_field, struct display_field *field_table[],
 		 size_t field_table_size);
 
-#endif /* UFTRACE_FIELD_H */
+#endif /* MOTRACE_FIELD_H */

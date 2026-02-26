@@ -1,4 +1,4 @@
-file uftrace
+file motrace
 set breakpoint pending on
 
 #b command_record

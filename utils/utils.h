@@ -1,13 +1,13 @@
 /*
- * utiltily functions and macros for uftrace
+ * utiltily functions and macros for motrace
  *
  * Copyright (C) 2014-2017, LG Electronics, Namhyung Kim <namhyung.kim@lge.com>
  *
  * Released under the GPL v2.
  */
 
-#ifndef UFTRACE_UTILS_H
-#define UFTRACE_UTILS_H
+#ifndef MOTRACE_UTILS_H
+#define MOTRACE_UTILS_H
 
 #include <ctype.h>
 #include <endian.h>
@@ -22,6 +22,8 @@
 
 #include "compiler.h"
 
+extern uint64_t tsc_freq_mhz;
+
 #ifndef container_of
 #define container_of(ptr, type, member)                                                            \
 	({                                                                                         \
@@ -31,13 +33,13 @@
 #endif
 
 #ifndef ALIGN
-#define ALIGN(n, a) (((n) + (a)-1) & ~((a)-1))
+#define ALIGN(n, a) (((n) + (a) - 1) & ~((a) - 1))
 #endif
 
 #define MIN(a, b) (((a) < (b)) ? (a) : (b))
 #define MAX(a, b) (((a) > (b)) ? (a) : (b))
 
-#define DIV_ROUND_UP(v, r) (((v) + (r)-1) / (r))
+#define DIV_ROUND_UP(v, r) (((v) + (r) - 1) / (r))
 #define ROUND_UP(v, r) (DIV_ROUND_UP((v), (r)) * (r))
 #define ROUND_DOWN(v, r) (((v) / (r)) * (r))
 
@@ -51,7 +53,14 @@
 #define NSEC_PER_SEC 1000000000
 #define NSEC_PER_MSEC 1000000
 
-#define BUG_REPORT_MSG "Please report this bug to https://github.com/namhyung/uftrace/issues.\n\n"
+#define KB 1024
+#define MB (KB * 1024)
+
+#define SHMEM_BUFFER_SIZE_KB 128
+#define SHMEM_BUFFER_SIZE (SHMEM_BUFFER_SIZE_KB * KB)
+
+
+#define BUG_REPORT_MSG "Please report this bug to https://github.com/namhyung/motrace/issues.\n\n"
 
 extern int debug;
 extern FILE *logfp;
@@ -68,7 +77,7 @@ extern const char *color_enum_or;
 
 /* must change DBG_DOMAIN_STR (in mcount.h) as well */
 enum debug_domain {
-	DBG_UFTRACE = 0,
+	DBG_MOTRACE = 0,
 	DBG_SYMBOL,
 	DBG_DEMANGLE,
 	DBG_FILTER,
@@ -125,11 +134,11 @@ extern void setup_color(enum color_setting color, char *pager);
 extern void setup_signal(void);
 
 #ifndef PR_FMT
-#define PR_FMT "uftrace"
+#define PR_FMT "motrace"
 #endif
 
 #ifndef PR_DOMAIN
-#define PR_DOMAIN DBG_UFTRACE
+#define PR_DOMAIN DBG_MOTRACE
 #endif
 
 #define pr_dbg(fmt, ...)                                                                           \
@@ -335,7 +344,7 @@ static inline char *has_kernel_filter(char *buf)
 	return NULL;
 }
 
-struct uftrace_time_range {
+struct motrace_time_range {
 	uint64_t first;
 	uint64_t start;
 	uint64_t stop;
@@ -371,7 +380,7 @@ char *setup_pager(void);
 void start_pager(char *pager);
 void wait_for_pager(void);
 
-bool check_time_range(struct uftrace_time_range *range, uint64_t timestamp);
+bool check_time_range(struct motrace_time_range *range, uint64_t timestamp);
 uint64_t parse_time(char *arg, int limited_digits);
 uint64_t parse_timestamp(char *arg);
 
@@ -406,14 +415,14 @@ void free_parsed_cmdline(char **argv);
 char *absolute_dirname(const char *path, char *resolved_path);
 
 /* Do not modify the input path (unlike in POSIX version) */
-static inline const char *uftrace_basename(const char *pathname)
+static inline const char *motrace_basename(const char *pathname)
 {
 	const char *p = strrchr(pathname, '/');
 
 	return p ? p + 1 : pathname;
 }
 
-char *uftrace_strerror(int errnum, char *buf, size_t buflen);
+char *motrace_strerror(int errnum, char *buf, size_t buflen);
 
 void stacktrace(void);
 
@@ -449,4 +458,4 @@ void stacktrace(void);
 
 int copy_file(const char *path_in, const char *path_out);
 
-#endif /* UFTRACE_UTILS_H */
+#endif /* MOTRACE_UTILS_H */

@@ -1,5 +1,0 @@
-*.pyc
-__pycache__/
-unittest
-failed-tests.txt
-failed-tests.txt.old

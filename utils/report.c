@@ -3,7 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "uftrace.h"
+#include "motrace.h"
 #include "utils/field.h"
 #include "utils/fstack.h"
 #include "utils/report.h"
@@ -37,10 +37,10 @@ static void finish_time_stat(struct report_time_stat *ts, unsigned long call)
 	ts->stdv = sqrt((ts->sum_sq + ts->rec_sq) / call - ts->avg * ts->avg) * 100 / ts->avg;
 }
 
-static struct uftrace_report_node *find_or_create_node(struct rb_root *root, const char *name,
-						       struct uftrace_report_node *node)
+static struct motrace_report_node *find_or_create_node(struct rb_root *root, const char *name,
+						       struct motrace_report_node *node)
 {
-	struct uftrace_report_node *iter;
+	struct motrace_report_node *iter;
 	struct rb_node *parent = NULL;
 	struct rb_node **p = &root->rb_node;
 
@@ -67,6 +67,8 @@ static struct uftrace_report_node *find_or_create_node(struct rb_root *root, con
 	node->loc = NULL;
 	init_time_stat(&node->total);
 	init_time_stat(&node->self);
+	init_time_stat(&node->offcpu_total);
+	init_time_stat(&node->offcpu_self);
 
 	rb_link_node(&node->name_link, parent, p);
 	rb_insert_color(&node->name_link, root);
@@ -74,30 +76,32 @@ static struct uftrace_report_node *find_or_create_node(struct rb_root *root, con
 	return node;
 }
 
-struct uftrace_report_node *report_find_node(struct rb_root *root, const char *name)
+struct motrace_report_node *report_find_node(struct rb_root *root, const char *name)
 {
 	return find_or_create_node(root, name, NULL);
 }
 
 /* NOTE: actual allocation will be done by caller */
-void report_add_node(struct rb_root *root, const char *name, struct uftrace_report_node *node)
+void report_add_node(struct rb_root *root, const char *name, struct motrace_report_node *node)
 {
 	find_or_create_node(root, name, node);
 }
 
-void report_delete_node(struct rb_root *root, struct uftrace_report_node *node)
+void report_delete_node(struct rb_root *root, struct motrace_report_node *node)
 {
 	rb_erase(&node->name_link, root);
 	free(node->name);
 	free(node);
 }
 
-void report_update_node(struct uftrace_report_node *node, struct uftrace_task_reader *task,
-			struct uftrace_dbg_loc *loc)
+void report_update_node(struct motrace_report_node *node, struct motrace_task_reader *task,
+			struct motrace_dbg_loc *loc)
 {
-	struct uftrace_fstack *fstack;
+	struct motrace_fstack *fstack;
 	uint64_t total_time;
 	uint64_t self_time;
+	uint64_t offcpu_total = 0;
+	uint64_t offcpu_self = 0;
 	bool recursive = false;
 	int i;
 
@@ -106,7 +110,7 @@ void report_update_node(struct uftrace_report_node *node, struct uftrace_task_re
 		return;
 
 	for (i = 0; i < task->stack_count; i++) {
-		struct uftrace_fstack *check = fstack_get(task, i);
+		struct motrace_fstack *check = fstack_get(task, i);
 		if (check == NULL)
 			break;
 
@@ -119,8 +123,23 @@ void report_update_node(struct uftrace_report_node *node, struct uftrace_task_re
 	total_time = fstack->total_time;
 	self_time = fstack->total_time - fstack->child_time;
 
+	if (task->h && (task->h->hdr.feat_mask & OFFCPU)) {
+		uint64_t total_cpu = fstack->cpu_time;
+		uint64_t self_cpu = 0;
+
+		if (fstack->cpu_time > fstack->child_cpu_time)
+			self_cpu = fstack->cpu_time - fstack->child_cpu_time;
+
+		if (total_time > total_cpu)
+			offcpu_total = total_time - total_cpu;
+		if (self_time > self_cpu)
+			offcpu_self = self_time - self_cpu;
+	}
+
 	update_time_stat(&node->total, total_time, recursive);
 	update_time_stat(&node->self, self_time, false);
+	update_time_stat(&node->offcpu_total, offcpu_total, recursive);
+	update_time_stat(&node->offcpu_self, offcpu_self, false);
 	node->call++;
 	node->loc = loc;
 	if (task->func != NULL)
@@ -129,7 +148,7 @@ void report_update_node(struct uftrace_report_node *node, struct uftrace_task_re
 
 void report_calc_avg(struct rb_root *root)
 {
-	struct uftrace_report_node *node;
+	struct motrace_report_node *node;
 	struct rb_node *n = rb_first(root);
 
 	while (n) {
@@ -137,6 +156,8 @@ void report_calc_avg(struct rb_root *root)
 
 		finish_time_stat(&node->total, node->call);
 		finish_time_stat(&node->self, node->call);
+		finish_time_stat(&node->offcpu_total, node->call);
+		finish_time_stat(&node->offcpu_self, node->call);
 
 		n = rb_next(n);
 	}
@@ -145,12 +166,12 @@ void report_calc_avg(struct rb_root *root)
 /* sort key support */
 struct sort_key {
 	const char *name;
-	int (*cmp)(struct uftrace_report_node *a, struct uftrace_report_node *b);
+	int (*cmp)(struct motrace_report_node *a, struct motrace_report_node *b);
 	struct list_head list;
 };
 
 #define SORT_KEY(_name, _field)                                                                    \
-	static int cmp_##_name(struct uftrace_report_node *a, struct uftrace_report_node *b)       \
+	static int cmp_##_name(struct motrace_report_node *a, struct motrace_report_node *b)       \
 	{                                                                                          \
 		if (a->_field == b->_field)                                                        \
 			return 0;                                                                  \
@@ -175,7 +196,7 @@ SORT_KEY(self_stdv, self.stdv);
 SORT_KEY(call, call);
 SORT_KEY(size, size);
 
-static int cmp_func(struct uftrace_report_node *a, struct uftrace_report_node *b)
+static int cmp_func(struct motrace_report_node *a, struct motrace_report_node *b)
 {
 	return strcmp(b->name, a->name);
 }
@@ -276,7 +297,7 @@ int report_setup_sort(const char *key_str)
 	return count;
 }
 
-static int cmp_node(struct uftrace_report_node *a, struct uftrace_report_node *b)
+static int cmp_node(struct motrace_report_node *a, struct motrace_report_node *b)
 {
 	int ret;
 	struct sort_key *key;
@@ -289,9 +310,9 @@ static int cmp_node(struct uftrace_report_node *a, struct uftrace_report_node *b
 	return 0;
 }
 
-static void insert_node(struct rb_root *root, struct uftrace_report_node *node)
+static void insert_node(struct rb_root *root, struct motrace_report_node *node)
 {
-	struct uftrace_report_node *iter;
+	struct motrace_report_node *iter;
 	struct rb_node *parent = NULL;
 	struct rb_node **p = &root->rb_node;
 
@@ -315,8 +336,8 @@ void report_sort_nodes(struct rb_root *name_root, struct rb_root *sort_root)
 
 	*sort_root = RB_ROOT;
 
-	while (n && !uftrace_done) {
-		struct uftrace_report_node *node;
+	while (n && !motrace_done) {
+		struct motrace_report_node *node;
 
 		/* keep node in the name tree */
 		node = rb_entry(n, typeof(*node), name_link);
@@ -327,26 +348,26 @@ void report_sort_nodes(struct rb_root *name_root, struct rb_root *sort_root)
 }
 
 /* diff support */
-struct uftrace_diff_policy diff_policy = {
+struct motrace_diff_policy diff_policy = {
 	.absolute = true,
 };
 
 struct diff_key {
 	const char *name;
-	int (*cmp)(struct uftrace_report_node *a, struct uftrace_report_node *b, int sort_column);
+	int (*cmp)(struct motrace_report_node *a, struct motrace_report_node *b, int sort_column);
 	struct list_head list;
 };
 
 #define DIFF_KEY(_name, _field)                                                                    \
-	static inline int cmp_field_##_name(struct uftrace_report_node *a,                         \
-					    struct uftrace_report_node *b)                         \
+	static inline int cmp_field_##_name(struct motrace_report_node *a,                         \
+					    struct motrace_report_node *b)                         \
 	{                                                                                          \
 		if (a->_field == b->_field)                                                        \
 			return 0;                                                                  \
 		return a->_field > b->_field ? 1 : -1;                                             \
 	}                                                                                          \
-	static inline int _cmp_diff_##_name(struct uftrace_report_node *a,                         \
-					    struct uftrace_report_node *b)                         \
+	static inline int _cmp_diff_##_name(struct motrace_report_node *a,                         \
+					    struct motrace_report_node *b)                         \
 	{                                                                                          \
 		int64_t diff_a = a->pair->_field - a->_field;                                      \
 		int64_t diff_b = b->pair->_field - b->_field;                                      \
@@ -360,8 +381,8 @@ struct diff_key {
 		}                                                                                  \
 		return diff_a > diff_b ? 1 : -1;                                                   \
 	}                                                                                          \
-	static inline int cmp_pcnt_##_name(struct uftrace_report_node *a,                          \
-					   struct uftrace_report_node *b)                          \
+	static inline int cmp_pcnt_##_name(struct motrace_report_node *a,                          \
+					   struct motrace_report_node *b)                          \
 	{                                                                                          \
 		int64_t diff_a = a->pair->_field - a->_field;                                      \
 		int64_t diff_b = b->pair->_field - b->_field;                                      \
@@ -382,7 +403,7 @@ struct diff_key {
 		}                                                                                  \
 		return pcnt_a > pcnt_b ? 1 : -1;                                                   \
 	}                                                                                          \
-	static int cmp_diff_##_name(struct uftrace_report_node *a, struct uftrace_report_node *b,  \
+	static int cmp_diff_##_name(struct motrace_report_node *a, struct motrace_report_node *b,  \
 				    int column)                                                    \
 	{                                                                                          \
 		if (column != 2)                                                                   \
@@ -409,7 +430,7 @@ DIFF_KEY(self_max, self.max);
 DIFF_KEY(call, call);
 DIFF_KEY(size, size);
 
-static int cmp_diff_func(struct uftrace_report_node *a, struct uftrace_report_node *b, int column)
+static int cmp_diff_func(struct motrace_report_node *a, struct motrace_report_node *b, int column)
 {
 	return strcmp(b->name, a->name);
 }
@@ -429,7 +450,7 @@ static struct diff_key *all_diff_keys[] = {
 /* list of used sort keys for diff */
 static LIST_HEAD(diff_keys);
 
-static struct uftrace_report_node dummy_node;
+static struct motrace_report_node dummy_node;
 
 int report_setup_diff(const char *key_str)
 {
@@ -465,7 +486,7 @@ int report_setup_diff(const char *key_str)
 	return count;
 }
 
-static int cmp_diff(struct uftrace_report_node *a, struct uftrace_report_node *b, int diff_column)
+static int cmp_diff(struct motrace_report_node *a, struct motrace_report_node *b, int diff_column)
 {
 	int ret;
 	struct diff_key *key;
@@ -478,9 +499,9 @@ static int cmp_diff(struct uftrace_report_node *a, struct uftrace_report_node *b
 	return 0;
 }
 
-static void insert_diff(struct rb_root *root, struct uftrace_report_node *node, int diff_column)
+static void insert_diff(struct rb_root *root, struct motrace_report_node *node, int diff_column)
 {
-	struct uftrace_report_node *iter;
+	struct motrace_report_node *iter;
 	struct rb_node *parent = NULL;
 	struct rb_node **p = &root->rb_node;
 
@@ -505,8 +526,8 @@ void report_diff_nodes(struct rb_root *orig_root, struct rb_root *pair_root,
 
 	*diff_root = RB_ROOT;
 
-	while (n && !uftrace_done) {
-		struct uftrace_report_node *iter, *pair, *node;
+	while (n && !motrace_done) {
+		struct motrace_report_node *iter, *pair, *node;
 
 		iter = rb_entry(n, typeof(*iter), name_link);
 		pair = report_find_node(pair_root, iter->name);
@@ -527,8 +548,8 @@ void report_diff_nodes(struct rb_root *orig_root, struct rb_root *pair_root,
 
 	/* add non-used pair nodes */
 	n = rb_first(pair_root);
-	while (n && !uftrace_done) {
-		struct uftrace_report_node *iter, *node;
+	while (n && !motrace_done) {
+		struct motrace_report_node *iter, *node;
 
 		iter = rb_entry(n, typeof(*iter), name_link);
 		if (iter->pair == NULL) {
@@ -547,7 +568,7 @@ void report_diff_nodes(struct rb_root *orig_root, struct rb_root *pair_root,
 void destroy_diff_nodes(struct rb_root *orig_root, struct rb_root *pair_root)
 {
 	struct rb_node *n;
-	struct uftrace_report_node *iter;
+	struct motrace_report_node *iter;
 
 	n = rb_first(orig_root);
 	while (n) {
@@ -603,14 +624,14 @@ void apply_diff_policy(char *policy)
 /* task sort key support */
 struct sort_task_key {
 	const char *name;
-	int (*cmp)(struct uftrace_data *handle, struct uftrace_report_node *a,
-		   struct uftrace_report_node *b);
+	int (*cmp)(struct motrace_data *handle, struct motrace_report_node *a,
+		   struct motrace_report_node *b);
 	struct list_head list;
 };
 
 #define TASK_KEY(_name, _field)                                                                    \
-	static int task_cmp_##_name(struct uftrace_data *handle, struct uftrace_report_node *a,    \
-				    struct uftrace_report_node *b)                                 \
+	static int task_cmp_##_name(struct motrace_data *handle, struct motrace_report_node *a,    \
+				    struct motrace_report_node *b)                                 \
 	{                                                                                          \
 		if (a->_field == b->_field)                                                        \
 			return 0;                                                                  \
@@ -626,8 +647,8 @@ TASK_KEY(total, total.sum);
 TASK_KEY(self, self.sum);
 TASK_KEY(func, call);
 
-static int cmp_task_tid(struct uftrace_data *handle, struct uftrace_report_node *a,
-			struct uftrace_report_node *b)
+static int cmp_task_tid(struct motrace_data *handle, struct motrace_report_node *a,
+			struct motrace_report_node *b)
 {
 	return strcmp(b->name, a->name);
 }
@@ -638,13 +659,13 @@ static struct sort_task_key task_tid = {
 	.list = LIST_HEAD_INIT(task_tid.list),
 };
 
-static int cmp_task_name(struct uftrace_data *handle, struct uftrace_report_node *a,
-			 struct uftrace_report_node *b)
+static int cmp_task_name(struct motrace_data *handle, struct motrace_report_node *a,
+			 struct motrace_report_node *b)
 {
 	int tid_a = strtol(a->name, NULL, 0);
 	int tid_b = strtol(b->name, NULL, 0);
-	struct uftrace_task *task_a = find_task(&handle->sessions, tid_a);
-	struct uftrace_task *task_b = find_task(&handle->sessions, tid_b);
+	struct motrace_task *task_a = find_task(&handle->sessions, tid_a);
+	struct motrace_task *task_b = find_task(&handle->sessions, tid_b);
 
 	if (task_a == NULL || task_b == NULL)
 		return !task_a ? (!task_b ? 0 : 1) : -1;
@@ -699,8 +720,8 @@ int report_setup_task(const char *key_str)
 	return count;
 }
 
-static int cmp_task(struct uftrace_data *handle, struct uftrace_report_node *a,
-		    struct uftrace_report_node *b)
+static int cmp_task(struct motrace_data *handle, struct motrace_report_node *a,
+		    struct motrace_report_node *b)
 {
 	int ret;
 	struct sort_task_key *key;
@@ -713,10 +734,10 @@ static int cmp_task(struct uftrace_data *handle, struct uftrace_report_node *a,
 	return 0;
 }
 
-static void insert_task(struct uftrace_data *handle, struct rb_root *root,
-			struct uftrace_report_node *node)
+static void insert_task(struct motrace_data *handle, struct rb_root *root,
+			struct motrace_report_node *node)
 {
-	struct uftrace_report_node *iter;
+	struct motrace_report_node *iter;
 	struct rb_node *parent = NULL;
 	struct rb_node **p = &root->rb_node;
 
@@ -734,15 +755,15 @@ static void insert_task(struct uftrace_data *handle, struct rb_root *root,
 	rb_insert_color(&node->sort_link, root);
 }
 
-void report_sort_tasks(struct uftrace_data *handle, struct rb_root *name_root,
+void report_sort_tasks(struct motrace_data *handle, struct rb_root *name_root,
 		       struct rb_root *sort_root)
 {
 	struct rb_node *n = rb_first(name_root);
 
 	*sort_root = RB_ROOT;
 
-	while (n && !uftrace_done) {
-		struct uftrace_report_node *node;
+	while (n && !motrace_done) {
+		struct motrace_report_node *node;
 
 		/* keep node in the name tree */
 		node = rb_entry(n, typeof(*node), name_link);
@@ -764,7 +785,7 @@ void report_sort_tasks(struct uftrace_data *handle, struct rb_root *name_root,
 #define FIELD_TIME(_id, _name, _field, _func, _header)                                             \
 	static void print_##_func(struct field_data *fd)                                           \
 	{                                                                                          \
-		struct uftrace_report_node *node = fd->arg;                                        \
+		struct motrace_report_node *node = fd->arg;                                        \
 		print_time_unit(node->_field);                                                     \
 	}                                                                                          \
 	FIELD_STRUCT(_id, _name, _func, _header, 10)
@@ -772,7 +793,7 @@ void report_sort_tasks(struct uftrace_data *handle, struct rb_root *name_root,
 #define FIELD_UINT(_id, _name, _field, _func, _header)                                             \
 	static void print_##_func(struct field_data *fd)                                           \
 	{                                                                                          \
-		struct uftrace_report_node *node = fd->arg;                                        \
+		struct motrace_report_node *node = fd->arg;                                        \
 		pr_out("%10" PRIu64 "", node->_field);                                             \
 	}                                                                                          \
 	FIELD_STRUCT(_id, _name, _func, _header, 10)
@@ -780,7 +801,7 @@ void report_sort_tasks(struct uftrace_data *handle, struct rb_root *name_root,
 #define FIELD_PERCENTAGE(_id, _name, _field, _func, _header)                                       \
 	static void print_##_func(struct field_data *fd)                                           \
 	{                                                                                          \
-		struct uftrace_report_node *node = fd->arg;                                        \
+		struct motrace_report_node *node = fd->arg;                                        \
 		pr_out("%9.2f%%", node->_field);                                                   \
 	}                                                                                          \
 	FIELD_STRUCT(_id, _name, _func, _header, 10)
@@ -788,8 +809,8 @@ void report_sort_tasks(struct uftrace_data *handle, struct rb_root *name_root,
 #define FIELD_TIME_DIFF(_id, _name, _field, _func, _header)                                        \
 	static void print_##_func##_diff(struct field_data *fd)                                    \
 	{                                                                                          \
-		struct uftrace_report_node *node = fd->arg;                                        \
-		struct uftrace_report_node *pair = node->pair;                                     \
+		struct motrace_report_node *node = fd->arg;                                        \
+		struct motrace_report_node *pair = node->pair;                                     \
 		if (diff_policy.percent) {                                                         \
 			pr_out("   ");                                                             \
 			print_diff_percent(node->_field, pair->_field);                            \
@@ -803,8 +824,8 @@ void report_sort_tasks(struct uftrace_data *handle, struct rb_root *name_root,
 #define FIELD_UINT_DIFF(_id, _name, _field, _func, _header)                                        \
 	static void print_##_func##_diff(struct field_data *fd)                                    \
 	{                                                                                          \
-		struct uftrace_report_node *node = fd->arg;                                        \
-		struct uftrace_report_node *pair = node->pair;                                     \
+		struct motrace_report_node *node = fd->arg;                                        \
+		struct motrace_report_node *pair = node->pair;                                     \
 		pr_out("  ");                                                                      \
 		print_diff_count(node->_field, pair->_field);                                      \
 	}                                                                                          \
@@ -813,8 +834,8 @@ void report_sort_tasks(struct uftrace_data *handle, struct rb_root *name_root,
 #define FIELD_TIME_DIFF_FULL(_id, _name, _field, _func, _header)                                   \
 	static void print_##_func##_diff_full(struct field_data *fd)                               \
 	{                                                                                          \
-		struct uftrace_report_node *node = fd->arg;                                        \
-		struct uftrace_report_node *pair = node->pair;                                     \
+		struct motrace_report_node *node = fd->arg;                                        \
+		struct motrace_report_node *pair = node->pair;                                     \
 		print_time_or_dash(node->_field);                                                  \
 		pr_out("  ");                                                                      \
 		print_time_or_dash(pair->_field);                                                  \
@@ -826,8 +847,8 @@ void report_sort_tasks(struct uftrace_data *handle, struct rb_root *name_root,
 #define FIELD_UINT_DIFF_FULL(_id, _name, _field, _func, _header)                                   \
 	static void print_##_func(struct field_data *fd)                                           \
 	{                                                                                          \
-		struct uftrace_report_node *node = fd->arg;                                        \
-		struct uftrace_report_node *pair = node->pair;                                     \
+		struct motrace_report_node *node = fd->arg;                                        \
+		struct motrace_report_node *pair = node->pair;                                     \
 		pr_out(" %9" PRIu64 "  %9" PRIu64, node->_field, pair->_field);                    \
 		pr_out("  ");                                                                      \
 		print_diff_count(node->_field, pair->_field);                                      \
@@ -837,8 +858,8 @@ void report_sort_tasks(struct uftrace_data *handle, struct rb_root *name_root,
 #define FIELD_TIME_DIFF_FULL_PCT(_id, _name, _field, _func, _header)                               \
 	static void print_##_func##_diff_full_percent(struct field_data *fd)                       \
 	{                                                                                          \
-		struct uftrace_report_node *node = fd->arg;                                        \
-		struct uftrace_report_node *pair = node->pair;                                     \
+		struct motrace_report_node *node = fd->arg;                                        \
+		struct motrace_report_node *pair = node->pair;                                     \
 		print_time_or_dash(node->_field);                                                  \
 		pr_out("  ");                                                                      \
 		print_time_or_dash(pair->_field);                                                  \
@@ -850,7 +871,7 @@ void report_sort_tasks(struct uftrace_data *handle, struct rb_root *name_root,
 #define FIELD_TID(_id, _name, _func, _header)                                                      \
 	static void print_##_func(struct field_data *fd)                                           \
 	{                                                                                          \
-		struct uftrace_report_node *node = fd->arg;                                        \
+		struct motrace_report_node *node = fd->arg;                                        \
 		pr_out("%*d", TASK_ID_LEN, strtol(node->name, NULL, 10));                          \
 	}                                                                                          \
 	FIELD_STRUCT(_id, _name, _func, _header, TASK_ID_LEN)
@@ -877,6 +898,8 @@ FIELD_UINT(REPORT_F_CALL, call, call, call, "Calls");
 FIELD_UINT(REPORT_F_SIZE, size, size, size, "Size");
 FIELD_PERCENTAGE(REPORT_F_TOTAL_TIME_STDV, total-stdv, total.stdv, total_stdv, "Total stdv");
 FIELD_PERCENTAGE(REPORT_F_SELF_TIME_STDV, self-stdv, self.stdv, self_stdv, "Self stdv");
+FIELD_TIME(REPORT_F_OFFCPU_TOTAL_TIME, offcpu, offcpu_total.sum, offcpu_total, "Offcpu time");
+FIELD_TIME(REPORT_F_OFFCPU_SELF_TIME, offcpu-self, offcpu_self.sum, offcpu_self, "OffcpuSelf");
 
 FIELD_TIME_DIFF(REPORT_F_TOTAL_TIME, total, total.sum, total, "Total time");
 FIELD_TIME_DIFF(REPORT_F_TOTAL_TIME_AVG, total-avg, total.avg, total_avg, "Total avg");
@@ -922,6 +945,7 @@ static struct display_field *field_table[] = {
 	&field_total, &field_total_avg, &field_total_min,  &field_total_max,
 	&field_self,  &field_self_avg,	&field_self_min,   &field_self_max,
 	&field_call,  &field_size,	&field_total_stdv, &field_self_stdv,
+	&field_offcpu_total, &field_offcpu_self,
 };
 
 /* index of this table should be matched to display_field_id */
@@ -956,7 +980,7 @@ static struct display_field *field_task_table[] = {
 	&field_task_nr_func,
 };
 
-static void setup_default_field(struct list_head *fields, struct uftrace_opts *opts,
+static void setup_default_field(struct list_head *fields, struct motrace_opts *opts,
 				struct display_field *p_field_table[])
 {
 	add_field(fields, p_field_table[REPORT_F_TOTAL_TIME]);
@@ -964,7 +988,7 @@ static void setup_default_field(struct list_head *fields, struct uftrace_opts *o
 	add_field(fields, p_field_table[REPORT_F_CALL]);
 }
 
-static void setup_avg_total_field(struct list_head *fields, struct uftrace_opts *opts,
+static void setup_avg_total_field(struct list_head *fields, struct motrace_opts *opts,
 				  struct display_field *p_field_table[])
 {
 	add_field(fields, p_field_table[REPORT_F_TOTAL_TIME_AVG]);
@@ -973,7 +997,7 @@ static void setup_avg_total_field(struct list_head *fields, struct uftrace_opts 
 	add_field(fields, p_field_table[REPORT_F_TOTAL_TIME_STDV]);
 }
 
-static void setup_avg_self_field(struct list_head *fields, struct uftrace_opts *opts,
+static void setup_avg_self_field(struct list_head *fields, struct motrace_opts *opts,
 				 struct display_field *p_field_table[])
 {
 	add_field(fields, p_field_table[REPORT_F_SELF_TIME_AVG]);
@@ -982,7 +1006,7 @@ static void setup_avg_self_field(struct list_head *fields, struct uftrace_opts *
 	add_field(fields, p_field_table[REPORT_F_SELF_TIME_STDV]);
 }
 
-static void setup_default_task_field(struct list_head *fields, struct uftrace_opts *opts,
+static void setup_default_task_field(struct list_head *fields, struct motrace_opts *opts,
 				     struct display_field *p_field_table[])
 {
 	add_field(fields, p_field_table[REPORT_F_TASK_TOTAL_TIME]);
@@ -991,7 +1015,7 @@ static void setup_default_task_field(struct list_head *fields, struct uftrace_op
 	add_field(fields, p_field_table[REPORT_F_TASK_NR_FUNC]);
 }
 
-void setup_report_field(struct list_head *output_fields, struct uftrace_opts *opts,
+void setup_report_field(struct list_head *output_fields, struct motrace_opts *opts,
 			enum avg_mode avg_mode)
 {
 	struct display_field **f_table;
@@ -1037,7 +1061,7 @@ TEST_CASE(report_find)
 {
 	struct rb_root root = RB_ROOT;
 	struct rb_node *rbnode;
-	struct uftrace_report_node *node;
+	struct motrace_report_node *node;
 	const char *test_name[TEST_NODES] = { "abc", "foo", "bar" };
 	const char *name_sort[TEST_NODES] = { "abc", "bar", "foo" };
 	int i;
@@ -1073,15 +1097,15 @@ TEST_CASE(report_sort)
 	struct rb_root name_tree = RB_ROOT;
 	struct rb_root sort_tree = RB_ROOT;
 	struct rb_node *rbnode;
-	struct uftrace_report_node *node;
-	static struct uftrace_fstack fstack[TEST_NODES];
-	struct uftrace_data handle = {
+	struct motrace_report_node *node;
+	static struct motrace_fstack fstack[TEST_NODES];
+	struct motrace_data handle = {
 		.hdr = {
 			.max_stack = TEST_NODES,
 		},
 		.nr_tasks = 1,
 	};
-	struct uftrace_task_reader task = {
+	struct motrace_task_reader task = {
 		.h = &handle,
 		.func_stack = fstack,
 	};
@@ -1177,22 +1201,22 @@ TEST_CASE(report_diff)
 	struct rb_root pair_tree = RB_ROOT;
 	struct rb_root diff_tree = RB_ROOT;
 	struct rb_node *rbnode;
-	struct uftrace_report_node *node;
+	struct motrace_report_node *node;
 	int i;
 
-	struct uftrace_data handle = {
+	struct motrace_data handle = {
 		.hdr = {
 			.max_stack = TEST_NODES,
 		},
 		.nr_tasks = 2,
 	};
-	struct uftrace_fstack orig_fstack[TEST_NODES];
-	struct uftrace_task_reader orig_task = {
+	struct motrace_fstack orig_fstack[TEST_NODES];
+	struct motrace_task_reader orig_task = {
 		.h = &handle,
 		.func_stack = orig_fstack,
 	};
-	struct uftrace_fstack pair_fstack[TEST_NODES];
-	struct uftrace_task_reader pair_task = {
+	struct motrace_fstack pair_fstack[TEST_NODES];
+	struct motrace_task_reader pair_task = {
 		.h = &handle,
 		.func_stack = pair_fstack,
 	};

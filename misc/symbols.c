@@ -2,7 +2,7 @@
 #include <inttypes.h>
 #include <unistd.h>
 
-#include "uftrace.h"
+#include "motrace.h"
 #include "utils/arch.h"
 #include "utils/dwarf.h"
 #include "utils/symbol.h"
@@ -18,10 +18,10 @@ static struct option symbols_options[] = {
 };
 
 static const char symbols_usage[] =
-	"symbols " UFTRACE_VERSION "\n"
+	"symbols " MOTRACE_VERSION "\n"
 	"\n"
 	" OPTION:\n"
-	"  -d, --data             Use this DATA instead of uftrace.data\n"
+	"  -d, --data             Use this DATA instead of motrace.data\n"
 	"  -v, --verbose          Be verbose\n"
 	"\n";
 
@@ -61,11 +61,11 @@ static void parse_option(int argc, char **argv, struct symbols_opts *opts)
 	opts->idx = optind;
 }
 
-static int print_session_symbol(struct uftrace_session *s, void *arg)
+static int print_session_symbol(struct motrace_session *s, void *arg)
 {
 	uint64_t addr = *(uint64_t *)arg;
-	struct uftrace_symbol *sym;
-	struct uftrace_dbg_loc *dloc;
+	struct motrace_symbol *sym;
+	struct motrace_dbg_loc *dloc;
 
 	sym = find_symtabs(&s->sym_info, addr);
 	if (sym == NULL)
@@ -86,16 +86,16 @@ static int print_session_symbol(struct uftrace_session *s, void *arg)
 	return 0;
 }
 
-static int read_sessions(struct uftrace_session_link *link, char *dirname)
+static int read_sessions(struct motrace_session_link *link, char *dirname)
 {
 	FILE *fp;
 	char *fname = NULL;
 	char *line = NULL;
 	size_t sz = 0;
 	unsigned long sec, nsec;
-	struct uftrace_msg_task tmsg;
-	struct uftrace_msg_sess smsg;
-	struct uftrace_msg_dlopen dlop;
+	struct motrace_msg_task tmsg;
+	struct motrace_msg_sess smsg;
+	struct motrace_msg_dlopen dlop;
 	char *exename, *pos;
 	int count = 0;
 
@@ -144,7 +144,7 @@ static int read_sessions(struct uftrace_session_link *link, char *dirname)
 			count++;
 		}
 		else if (!strncmp(line, "DLOP", 4)) {
-			struct uftrace_session *s;
+			struct motrace_session *s;
 
 			sscanf(line + 5, "timestamp=%lu.%lu tid=%d sid=%s base=%" PRIx64, &sec,
 			       &nsec, &dlop.task.tid, (char *)&dlop.sid, &dlop.base_addr);
@@ -180,9 +180,9 @@ int main(int argc, char *argv[])
 	int ret = 0;
 	uint64_t addr;
 	struct symbols_opts opts = {
-		.dirname = UFTRACE_DIR_NAME,
+		.dirname = MOTRACE_DIR_NAME,
 	};
-	struct uftrace_session_link link = {
+	struct motrace_session_link link = {
 		.root = RB_ROOT,
 		.tasks = RB_ROOT,
 	};
@@ -194,7 +194,7 @@ int main(int argc, char *argv[])
 
 retry:
 	if (read_sessions(&link, opts.dirname) < 0) {
-		if (!strcmp(opts.dirname, UFTRACE_DIR_NAME)) {
+		if (!strcmp(opts.dirname, MOTRACE_DIR_NAME)) {
 			opts.dirname = ".";
 			goto retry;
 		}

@@ -8,7 +8,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#include "uftrace.h"
+#include "motrace.h"
 #include "utils/compiler.h"
 #include "utils/fstack.h"
 #include "utils/perf.h"
@@ -63,7 +63,7 @@ static int open_perf_event(int pid, int cpu, int use_ctxsw)
  * It returns 0 for success, -1 if failed.  Callers should call
  * finish_perf_record() after recording.
  */
-int setup_perf_record(struct uftrace_perf_writer *perf, int nr_cpu, int pid, const char *dirname,
+int setup_perf_record(struct motrace_perf_writer *perf, int nr_cpu, int pid, const char *dirname,
 		      int use_ctxsw)
 {
 	char filename[PATH_MAX];
@@ -130,7 +130,7 @@ int setup_perf_record(struct uftrace_perf_writer *perf, int nr_cpu, int pid, con
  *
  * This function releases all resources in the @perf.
  */
-void finish_perf_record(struct uftrace_perf_writer *perf)
+void finish_perf_record(struct motrace_perf_writer *perf)
 {
 	int cpu;
 
@@ -163,7 +163,7 @@ void finish_perf_record(struct uftrace_perf_writer *perf)
  * This function copies contents in the perf ring buffer to a file
  * or a network socket.
  */
-void record_perf_data(struct uftrace_perf_writer *perf, int cpu, int sock)
+void record_perf_data(struct motrace_perf_writer *perf, int cpu, int sock)
 {
 	struct perf_event_mmap_page *pc;
 	unsigned char *data;
@@ -244,16 +244,16 @@ out:
 
 /**
  * setup_perf_data - prepare reading perf event data
- * @handle - uftrace data file handle
+ * @handle - motrace data file handle
  *
  * This function prepares to read perf event data from perf-cpu*.dat
  * files.  It returns 0 on success which includes that perf event data
  * already setup, -1 on failure.  Callers should call
  * finish_perf_data() after reading all perf event data.
  */
-int setup_perf_data(struct uftrace_data *handle)
+int setup_perf_data(struct motrace_data *handle)
 {
-	struct uftrace_perf_reader *perf;
+	struct motrace_perf_reader *perf;
 	glob_t globbuf;
 	char *pattern;
 	size_t i;
@@ -290,11 +290,11 @@ out:
 
 /**
  * finish_perf_data - destroy resources for perf event data
- * @handle - uftrace data file handle
+ * @handle - motrace data file handle
  *
  * This function releases all resources regarding perf event.
  */
-void finish_perf_data(struct uftrace_data *handle)
+void finish_perf_data(struct motrace_data *handle)
 {
 	int i;
 
@@ -308,10 +308,10 @@ void finish_perf_data(struct uftrace_data *handle)
 	handle->perf = NULL;
 }
 
-static int read_perf_event(struct uftrace_data *handle, struct uftrace_perf_reader *perf)
+static int read_perf_event(struct motrace_data *handle, struct motrace_perf_reader *perf)
 {
 	struct perf_event_header h;
-	struct uftrace_task_reader *task;
+	struct motrace_task_reader *task;
 	union {
 		struct perf_context_switch_event cs;
 		struct perf_task_event t;
@@ -422,7 +422,7 @@ again:
 
 /**
  * read_perf_data - read perf event data
- * @handle: uftrace data file handle
+ * @handle: motrace data file handle
  *
  * This function reads perf events for each cpu data file and returns
  * the (cpu) index of earliest event.  The event info can be found in
@@ -431,9 +431,9 @@ again:
  * It's important that callers should reset the valid bit after using
  * the event so that it can read next event for the cpu data file.
  */
-int read_perf_data(struct uftrace_data *handle)
+int read_perf_data(struct motrace_data *handle)
 {
-	struct uftrace_perf_reader *perf;
+	struct motrace_perf_reader *perf;
 	uint64_t min_time = ~0ULL;
 	int best = -1;
 	int i;
@@ -459,11 +459,11 @@ int read_perf_data(struct uftrace_data *handle)
 }
 
 /**
- * get_perf_record - convert perf event into uftrace record format
- * @handle: uftrace data file handle
+ * get_perf_record - convert perf event into motrace record format
+ * @handle: motrace data file handle
  * @perf: data structure for perf event
  *
- * This function converts the last perf event into an uftrace record
+ * This function converts the last perf event into an motrace record
  * so that it can be handled in the fstack code like normal function
  * record.  This is useful for schedule event treated as a function.
  *
@@ -471,17 +471,17 @@ int read_perf_data(struct uftrace_data *handle)
  * event.  But do_dump_file() calls it directly without the above
  * function in order to access to the raw file contents.
  */
-struct uftrace_record *get_perf_record(struct uftrace_data *handle,
-				       struct uftrace_perf_reader *perf)
+struct motrace_record *get_perf_record(struct motrace_data *handle,
+				       struct motrace_perf_reader *perf)
 {
-	static struct uftrace_record rec;
+	static struct motrace_record rec;
 
 	if (!perf->valid) {
 		if (read_perf_event(handle, perf) < 0)
 			return NULL;
 	}
 
-	rec.type = UFTRACE_EVENT;
+	rec.type = MOTRACE_EVENT;
 	rec.time = perf->time;
 	rec.magic = RECORD_MAGIC;
 	rec.more = 0;
@@ -513,15 +513,15 @@ struct uftrace_record *get_perf_record(struct uftrace_data *handle,
 
 /**
  * update_perf_task_comm - read perf event data and update task's comm
- * @handle: uftrace data file handle
+ * @handle: motrace data file handle
  *
  * This function reads perf events for each cpu data file and updates
  * task->comm for each PERF_RECORD_COMM.
  */
-void update_perf_task_comm(struct uftrace_data *handle)
+void update_perf_task_comm(struct motrace_data *handle)
 {
-	struct uftrace_perf_reader *perf;
-	struct uftrace_task *task;
+	struct motrace_perf_reader *perf;
+	struct motrace_task *task;
 	int i;
 
 	for (i = 0; i < handle->nr_perf; i++) {
@@ -551,9 +551,9 @@ void update_perf_task_comm(struct uftrace_data *handle)
 	}
 }
 
-static void remove_event_rstack(struct uftrace_task_reader *task)
+static void remove_event_rstack(struct motrace_task_reader *task)
 {
-	struct uftrace_rstack_list_node *last;
+	struct motrace_rstack_list_node *last;
 	uint64_t last_addr;
 
 	/* also delete matching entry (at the last) */
@@ -566,12 +566,12 @@ static void remove_event_rstack(struct uftrace_task_reader *task)
 		 last_addr != EVENT_ID_PERF_SCHED_OUT_PREEMPT);
 }
 
-void process_perf_event(struct uftrace_data *handle)
+void process_perf_event(struct motrace_data *handle)
 {
-	struct uftrace_perf_reader *perf;
-	struct uftrace_task_reader *task;
-	struct uftrace_record *rec;
-	struct uftrace_fstack_args args = {};
+	struct motrace_perf_reader *perf;
+	struct motrace_task_reader *task;
+	struct motrace_record *rec;
+	struct motrace_fstack_args args = {};
 	int p;
 
 	if (handle->perf_event_processed)
@@ -596,7 +596,7 @@ void process_perf_event(struct uftrace_data *handle)
 			args.len = strlen(perf->u.comm.comm) + 1;
 		}
 		else if (perf->type == PERF_RECORD_SWITCH && !perf->u.ctxsw.out) {
-			struct uftrace_rstack_list_node *last;
+			struct motrace_rstack_list_node *last;
 			uint64_t delta;
 
 			if (task->event_list.count == 0)

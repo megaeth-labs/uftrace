@@ -15,7 +15,7 @@
 /* PMU management data for given event */
 struct pmu_data {
 	struct list_head list;
-	enum uftrace_event_id evt_id;
+	enum motrace_event_id evt_id;
 	int n_members;
 	int refcnt;
 	int fd[];
@@ -68,7 +68,7 @@ static const struct pmu_config branch[] = {
 };
 
 static const struct pmu_info {
-	enum uftrace_event_id event_id;
+	enum motrace_event_id event_id;
 	unsigned n_members;
 	const struct pmu_config *const setting;
 } pmu_configs[] = {
@@ -108,7 +108,7 @@ static void read_perf_event(int fd, void *buf, ssize_t len)
 		pr_dbg("reading perf_event failed: %m\n");
 }
 
-static struct pmu_data *prepare_pmu_event(struct mcount_thread_data *mtdp, enum uftrace_event_id id)
+static struct pmu_data *prepare_pmu_event(struct mcount_thread_data *mtdp, enum motrace_event_id id)
 {
 	struct pmu_data *pd;
 	const struct pmu_info *info;
@@ -164,7 +164,7 @@ static struct pmu_data *prepare_pmu_event(struct mcount_thread_data *mtdp, enum 
 	return pd;
 }
 
-int read_pmu_event(struct mcount_thread_data *mtdp, enum uftrace_event_id id, void *buf)
+int read_pmu_event(struct mcount_thread_data *mtdp, enum motrace_event_id id, void *buf)
 {
 	struct pmu_data *pd;
 	struct {
@@ -204,7 +204,7 @@ void finish_pmu_event(struct mcount_thread_data *mtdp)
 	}
 }
 
-void release_pmu_event(struct mcount_thread_data *mtdp, enum uftrace_event_id id)
+void release_pmu_event(struct mcount_thread_data *mtdp, enum motrace_event_id id)
 {
 	struct pmu_data *pd, *tmp;
 
@@ -237,7 +237,7 @@ void release_pmu_event(struct mcount_thread_data *mtdp, enum uftrace_event_id id
 TEST_CASE(mcount_pmu_event)
 {
 	struct mcount_thread_data mtd;
-	enum uftrace_event_id eid = EVENT_ID_READ_PMU_CYCLE;
+	enum motrace_event_id eid = EVENT_ID_READ_PMU_CYCLE;
 	struct pmu_data *pd;
 	char buf[32];
 

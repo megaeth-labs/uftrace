@@ -1,5 +1,5 @@
-#ifndef UFTRACE_MCOUNT_DYNAMIC_H
-#define UFTRACE_MCOUNT_DYNAMIC_H
+#ifndef MOTRACE_MCOUNT_DYNAMIC_H
+#define MOTRACE_MCOUNT_DYNAMIC_H
 
 #include <link.h>
 #include <stdlib.h>
@@ -26,6 +26,8 @@ extern void __fentry__(void);
 extern void __dentry__(void);
 extern void __xray_entry(void);
 extern void __xray_exit(void);
+extern void __mo_entry__(void);
+extern void __mo_exit__(void);
 
 struct xray_instr_map {
 	uint64_t address;
@@ -51,7 +53,7 @@ __maybe_unused static const char *mdi_type_names[] = {
 
 struct mcount_dynamic_info {
 	struct mcount_dynamic_info *next;
-	struct uftrace_mmap *map;
+	struct motrace_mmap *map;
 	unsigned long base_addr;
 	unsigned long text_addr;
 	int text_size;
@@ -79,10 +81,10 @@ struct mcount_disasm_engine {
  */
 #define MAX_COND_BRANCH 3
 
-int mcount_dynamic_update(struct uftrace_sym_info *sinfo, char *patch_funcs,
-			  enum uftrace_pattern_type ptype);
-void mcount_dynamic_dlopen(struct uftrace_sym_info *sinfo, struct dl_phdr_info *info, char *path,
-			   struct uftrace_mmap *map);
+int mcount_dynamic_update(struct motrace_sym_info *sinfo, char *patch_funcs,
+			  enum motrace_pattern_type ptype);
+void mcount_dynamic_dlopen(struct motrace_sym_info *sinfo, struct dl_phdr_info *info, char *path,
+			   struct motrace_mmap *map);
 void mcount_dynamic_finish(void);
 
 struct mcount_orig_insn {
@@ -114,7 +116,7 @@ struct cond_branch_info {
  * @has_jump : whether jump_target should be added
  */
 struct mcount_disasm_info {
-	struct uftrace_symbol *sym;
+	struct motrace_symbol *sym;
 	unsigned long addr;
 	unsigned char insns[64];
 	int orig_size;
@@ -136,7 +138,7 @@ void mcount_freeze_code(void);
 int mcount_setup_trampoline(struct mcount_dynamic_info *adi);
 void mcount_cleanup_trampoline(struct mcount_dynamic_info *mdi);
 
-int mcount_patch_func(struct mcount_dynamic_info *mdi, struct uftrace_symbol *sym,
+int mcount_patch_func(struct mcount_dynamic_info *mdi, struct motrace_symbol *sym,
 		      struct mcount_disasm_engine *disasm, unsigned min_size);
 
 void mcount_disasm_init(struct mcount_disasm_engine *disasm);
@@ -147,7 +149,7 @@ void mcount_arch_patch_branch(struct mcount_disasm_info *info, struct mcount_ori
 
 struct dynamic_bad_symbol {
 	struct list_head list;
-	struct uftrace_symbol *sym;
+	struct motrace_symbol *sym;
 	bool reverted;
 };
 
@@ -156,4 +158,4 @@ bool mcount_add_badsym(struct mcount_dynamic_info *mdi, unsigned long callsite,
 		       unsigned long target);
 void mcount_free_badsym(struct mcount_dynamic_info *mdi);
 
-#endif /* UFTRACE_MCOUNT_DYNAMIC_H */
+#endif /* MOTRACE_MCOUNT_DYNAMIC_H */

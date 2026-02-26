@@ -1,5 +1,5 @@
-#ifndef UFTRACE_COMPILER_H
-#define UFTRACE_COMPILER_H
+#ifndef MOTRACE_COMPILER_H
+#define MOTRACE_COMPILER_H
 
 #define compiler_barrier() asm volatile("" ::: "memory")
 
@@ -77,4 +77,4 @@
 #endif
 #define __align(n) __attribute__((aligned(n)))
 
-#endif /* UFTRACE_COMPILER_H */
+#endif /* MOTRACE_COMPILER_H */

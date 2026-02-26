@@ -164,7 +164,7 @@ def get_decl_type(line):
     # error
     return DECL_TYPE_NONE
 
-def make_uftrace_retval_format(ctype, funcname):
+def make_motrace_retval_format(ctype, funcname):
     retval_format = funcname + "@"
 
     if ctype == "void":
@@ -204,7 +204,7 @@ def make_uftrace_retval_format(ctype, funcname):
     return retval_format
 
 
-def make_uftrace_args_format(args, funcname):
+def make_motrace_args_format(args, funcname):
     args_format = funcname + "@"
 
     i = 0
@@ -270,7 +270,7 @@ def parse_argument():
     parser.add_argument("-i", "--input-file", dest='infile', default="prototypes.h",
                         help="input prototype header file (default: prototypes.h")
     parser.add_argument("-o", "--output-file", dest='outfile', default="autoargs.h",
-                        help="output uftrace argspec file (default: autoargs.h)")
+                        help="output motrace argspec file (default: autoargs.h)")
     parser.add_argument("-v", "--verbose", dest='verbose', action='store_true',
                         help="show internal command and result for debugging")
 
@@ -330,8 +330,8 @@ if __name__ == "__main__":
             if verbose:
                 print(args)
 
-            retval_format = make_uftrace_retval_format(return_type, funcname)
-            args_format = make_uftrace_args_format(args, funcname)
+            retval_format = make_motrace_retval_format(return_type, funcname)
+            args_format = make_motrace_args_format(args, funcname)
 
             if verbose:
                 print("ret : " + retval_format)

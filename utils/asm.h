@@ -1,5 +1,5 @@
-#ifndef UFTRACE_ASM_H
-#define UFTRACE_ASM_H
+#ifndef MOTRACE_ASM_H
+#define MOTRACE_ASM_H
 
 /* clang-format off */
 
@@ -7,10 +7,10 @@
 	.global sym;				\
 	.type sym, %function;			\
 sym:						\
-	.global uftrace_ ## sym;		\
-	.hidden uftrace_ ## sym;		\
-	.type uftrace_ ## sym, %function;	\
-uftrace_ ## sym:
+	.global motrace_ ## sym;		\
+	.hidden motrace_ ## sym;		\
+	.type motrace_ ## sym, %function;	\
+motrace_ ## sym:
 
 #define ENTRY(sym)				\
 	.global sym;				\
@@ -23,4 +23,4 @@ sym:
 
 /* clang-format on */
 
-#endif /* UFTRACE_ASM_H */
+#endif /* MOTRACE_ASM_H */

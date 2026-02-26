@@ -1,5 +1,5 @@
 /*
- * uftrace info command related routines
+ * motrace info command related routines
  *
  * Copyright (C) 2014-2018, LG Electronics, Namhyung Kim <namhyung.kim@lge.com>
  *
@@ -17,7 +17,7 @@
 #include <unistd.h>
 
 #include "libmcount/mcount.h"
-#include "uftrace.h"
+#include "motrace.h"
 #include "utils/filter.h"
 #include "utils/fstack.h"
 #include "utils/symbol.h"
@@ -25,14 +25,14 @@
 #include "version.h"
 
 struct read_handler_arg {
-	struct uftrace_data *handle;
+	struct motrace_data *handle;
 	char buf[PATH_MAX];
 };
 
 struct fill_handler_arg {
 	int fd;
 	int exit_status;
-	struct uftrace_opts *opts;
+	struct motrace_opts *opts;
 	struct rusage *rusage;
 	char *elapsed_time;
 	char buf[PATH_MAX];
@@ -64,8 +64,8 @@ static int fill_exe_name(void *arg)
 static int read_exe_name(void *arg)
 {
 	struct read_handler_arg *rha = arg;
-	struct uftrace_data *handle = rha->handle;
-	struct uftrace_info *info = &handle->info;
+	struct motrace_data *handle = rha->handle;
+	struct motrace_info *info = &handle->info;
 	char *buf = rha->buf;
 
 	if (fgets(buf, sizeof(rha->buf), handle->fp) == NULL)
@@ -110,8 +110,8 @@ static int convert_to_int(unsigned char hex)
 static int read_exe_build_id(void *arg)
 {
 	struct read_handler_arg *rha = arg;
-	struct uftrace_data *handle = rha->handle;
-	struct uftrace_info *info = &handle->info;
+	struct motrace_data *handle = rha->handle;
+	struct motrace_info *info = &handle->info;
 	char build_id_str[BUILD_ID_STR_SIZE];
 	char *buf = rha->buf;
 	int i;
@@ -148,8 +148,8 @@ static int fill_exit_status(void *arg)
 static int read_exit_status(void *arg)
 {
 	struct read_handler_arg *rha = arg;
-	struct uftrace_data *handle = rha->handle;
-	struct uftrace_info *info = &handle->info;
+	struct motrace_data *handle = rha->handle;
+	struct motrace_info *info = &handle->info;
 	char *buf = rha->buf;
 
 	if (fgets(buf, sizeof(rha->buf), handle->fp) == NULL)
@@ -206,8 +206,8 @@ static int fill_cmdline(void *arg)
 static int read_cmdline(void *arg)
 {
 	struct read_handler_arg *rha = arg;
-	struct uftrace_data *handle = rha->handle;
-	struct uftrace_info *info = &handle->info;
+	struct motrace_data *handle = rha->handle;
+	struct motrace_info *info = &handle->info;
 	char *buf = rha->buf;
 
 	if (fgets(buf, sizeof(rha->buf), handle->fp) == NULL)
@@ -241,8 +241,8 @@ static int fill_cpuinfo(void *arg)
 static int read_cpuinfo(void *arg)
 {
 	struct read_handler_arg *rha = arg;
-	struct uftrace_data *handle = rha->handle;
-	struct uftrace_info *info = &handle->info;
+	struct motrace_data *handle = rha->handle;
+	struct motrace_info *info = &handle->info;
 	char *buf = rha->buf;
 	int i, lines;
 
@@ -347,8 +347,8 @@ static int fill_meminfo(void *arg)
 static int read_meminfo(void *arg)
 {
 	struct read_handler_arg *rha = arg;
-	struct uftrace_data *handle = rha->handle;
-	struct uftrace_info *info = &handle->info;
+	struct motrace_data *handle = rha->handle;
+	struct motrace_info *info = &handle->info;
 	char *buf = rha->buf;
 
 	if (fgets(buf, sizeof(rha->buf), handle->fp) == NULL)
@@ -411,8 +411,8 @@ static int fill_osinfo(void *arg)
 static int read_osinfo(void *arg)
 {
 	struct read_handler_arg *rha = arg;
-	struct uftrace_data *handle = rha->handle;
-	struct uftrace_info *info = &handle->info;
+	struct motrace_data *handle = rha->handle;
+	struct motrace_info *info = &handle->info;
 	char *buf = rha->buf;
 	int i, lines;
 
@@ -455,7 +455,7 @@ struct tid_list {
 	int *tid;
 };
 
-static int build_tid_list(struct uftrace_task *t, void *arg)
+static int build_tid_list(struct motrace_task *t, void *arg)
 {
 	struct tid_list *list = arg;
 
@@ -475,7 +475,7 @@ static int fill_taskinfo(void *arg)
 	struct tid_list tlist = {
 		.nr = 0,
 	};
-	struct uftrace_session_link link = {
+	struct motrace_session_link link = {
 		.root = RB_ROOT,
 		.tasks = RB_ROOT,
 	};
@@ -506,8 +506,8 @@ static int fill_taskinfo(void *arg)
 static int read_taskinfo(void *arg)
 {
 	struct read_handler_arg *rha = arg;
-	struct uftrace_data *handle = rha->handle;
-	struct uftrace_info *info = &handle->info;
+	struct motrace_data *handle = rha->handle;
+	struct motrace_info *info = &handle->info;
 	int i, lines;
 	int ret = -1;
 	char *buf = NULL;
@@ -592,8 +592,8 @@ static int fill_usageinfo(void *arg)
 static int read_usageinfo(void *arg)
 {
 	struct read_handler_arg *rha = arg;
-	struct uftrace_data *handle = rha->handle;
-	struct uftrace_info *info = &handle->info;
+	struct motrace_data *handle = rha->handle;
+	struct motrace_info *info = &handle->info;
 	char *buf = rha->buf;
 	int i, lines;
 
@@ -656,8 +656,8 @@ static int fill_loadinfo(void *arg)
 static int read_loadinfo(void *arg)
 {
 	struct read_handler_arg *rha = arg;
-	struct uftrace_data *handle = rha->handle;
-	struct uftrace_info *info = &handle->info;
+	struct motrace_data *handle = rha->handle;
+	struct motrace_info *info = &handle->info;
 	char *buf = rha->buf;
 
 	if (fgets(buf, sizeof(rha->buf), handle->fp) == NULL)
@@ -706,8 +706,8 @@ static int fill_arg_spec(void *arg)
 static int read_arg_spec(void *arg)
 {
 	struct read_handler_arg *rha = arg;
-	struct uftrace_data *handle = rha->handle;
-	struct uftrace_info *info = &handle->info;
+	struct motrace_data *handle = rha->handle;
+	struct motrace_info *info = &handle->info;
 	int i, lines;
 	int ret = -1;
 	char *buf = NULL;
@@ -772,8 +772,8 @@ static int fill_record_date(void *arg)
 static int read_record_date(void *arg)
 {
 	struct read_handler_arg *rha = arg;
-	struct uftrace_data *handle = rha->handle;
-	struct uftrace_info *info = &handle->info;
+	struct motrace_data *handle = rha->handle;
+	struct motrace_info *info = &handle->info;
 	char *buf = rha->buf;
 
 	if (fgets(buf, sizeof(rha->buf), handle->fp) == NULL)
@@ -807,8 +807,8 @@ static int fill_pattern_type(void *arg)
 static int read_pattern_type(void *arg)
 {
 	struct read_handler_arg *rha = arg;
-	struct uftrace_data *handle = rha->handle;
-	struct uftrace_info *info = &handle->info;
+	struct motrace_data *handle = rha->handle;
+	struct motrace_info *info = &handle->info;
 	char *buf = rha->buf;
 	size_t len;
 
@@ -826,27 +826,27 @@ static int read_pattern_type(void *arg)
 	return 0;
 }
 
-static int fill_uftrace_version(void *arg)
+static int fill_motrace_version(void *arg)
 {
 	struct fill_handler_arg *fha = arg;
 
-	return dprintf(fha->fd, "uftrace_version:%s\n", UFTRACE_VERSION);
+	return dprintf(fha->fd, "motrace_version:%s\n", MOTRACE_VERSION);
 }
 
-static int read_uftrace_version(void *arg)
+static int read_motrace_version(void *arg)
 {
 	struct read_handler_arg *rha = arg;
-	struct uftrace_data *handle = rha->handle;
-	struct uftrace_info *info = &handle->info;
+	struct motrace_data *handle = rha->handle;
+	struct motrace_info *info = &handle->info;
 	char *buf = rha->buf;
 
 	if (fgets(buf, sizeof(rha->buf), handle->fp) == NULL)
 		return -1;
 
-	if (strncmp(buf, "uftrace_version:", 16))
+	if (strncmp(buf, "motrace_version:", 16))
 		return -1;
 
-	info->uftrace_version = copy_info_str(&buf[16]);
+	info->motrace_version = copy_info_str(&buf[16]);
 
 	return 0;
 }
@@ -871,8 +871,8 @@ static int fill_utc_offset(void *arg)
 static int read_utc_offset(void *arg)
 {
 	struct read_handler_arg *rha = arg;
-	struct uftrace_data *handle = rha->handle;
-	struct uftrace_info *info = &handle->info;
+	struct motrace_data *handle = rha->handle;
+	struct motrace_info *info = &handle->info;
 	char *buf = rha->buf;
 
 	if (fgets(buf, sizeof(rha->buf), handle->fp) == NULL)
@@ -886,12 +886,12 @@ static int read_utc_offset(void *arg)
 	return 0;
 }
 
-struct uftrace_info_handler {
-	enum uftrace_info_bits bit;
+struct motrace_info_handler {
+	enum motrace_info_bits bit;
 	int (*handler)(void *arg);
 };
 
-void fill_uftrace_info(uint64_t *info_mask, int fd, struct uftrace_opts *opts, int status,
+void fill_motrace_info(uint64_t *info_mask, int fd, struct motrace_opts *opts, int status,
 		       struct rusage *rusage, char *elapsed_time)
 {
 	size_t i;
@@ -903,7 +903,7 @@ void fill_uftrace_info(uint64_t *info_mask, int fd, struct uftrace_opts *opts, i
 		.rusage = rusage,
 		.elapsed_time = elapsed_time,
 	};
-	struct uftrace_info_handler fill_handlers[] = {
+	struct motrace_info_handler fill_handlers[] = {
 		{ EXE_NAME, fill_exe_name },
 		{ EXE_BUILD_ID, fill_exe_build_id },
 		{ EXIT_STATUS, fill_exit_status },
@@ -917,7 +917,7 @@ void fill_uftrace_info(uint64_t *info_mask, int fd, struct uftrace_opts *opts, i
 		{ ARG_SPEC, fill_arg_spec },
 		{ RECORD_DATE, fill_record_date },
 		{ PATTERN_TYPE, fill_pattern_type },
-		{ VERSION, fill_uftrace_version },
+		{ VERSION, fill_motrace_version },
 		{ UTC_OFFSET, fill_utc_offset },
 	};
 
@@ -933,7 +933,7 @@ void fill_uftrace_info(uint64_t *info_mask, int fd, struct uftrace_opts *opts, i
 			/* ignore failed info */
 			errno = 0;
 			if (lseek(fd, offset, SEEK_SET) == (off_t)-1 && errno)
-				pr_warn("fail to reset uftrace info: %m\n");
+				pr_warn("fail to reset motrace info: %m\n");
 
 			continue;
 		}
@@ -941,13 +941,13 @@ void fill_uftrace_info(uint64_t *info_mask, int fd, struct uftrace_opts *opts, i
 	}
 }
 
-int read_uftrace_info(uint64_t info_mask, struct uftrace_data *handle)
+int read_motrace_info(uint64_t info_mask, struct motrace_data *handle)
 {
 	size_t i;
 	struct read_handler_arg arg = {
 		.handle = handle,
 	};
-	struct uftrace_info_handler read_handlers[] = {
+	struct motrace_info_handler read_handlers[] = {
 		{ EXE_NAME, read_exe_name },
 		{ EXE_BUILD_ID, read_exe_build_id },
 		{ EXIT_STATUS, read_exit_status },
@@ -961,7 +961,7 @@ int read_uftrace_info(uint64_t info_mask, struct uftrace_data *handle)
 		{ ARG_SPEC, read_arg_spec },
 		{ RECORD_DATE, read_record_date },
 		{ PATTERN_TYPE, read_pattern_type },
-		{ VERSION, read_uftrace_version },
+		{ VERSION, read_motrace_version },
 		{ UTC_OFFSET, read_utc_offset },
 	};
 
@@ -972,14 +972,14 @@ int read_uftrace_info(uint64_t info_mask, struct uftrace_data *handle)
 			continue;
 
 		if (read_handlers[i].handler(&arg) < 0) {
-			pr_dbg("error during read uftrace info (%x)\n", read_handlers[i].bit);
+			pr_dbg("error during read motrace info (%x)\n", read_handlers[i].bit);
 			return -1;
 		}
 	}
 	return 0;
 }
 
-void clear_uftrace_info(struct uftrace_info *info)
+void clear_motrace_info(struct motrace_info *info)
 {
 	free(info->exename);
 	free(info->cmdline);
@@ -993,7 +993,7 @@ void clear_uftrace_info(struct uftrace_info *info)
 	free(info->record_date);
 	free(info->elapsed_time);
 	free(info->utc_offset);
-	free(info->uftrace_version);
+	free(info->motrace_version);
 	free(info->retspec);
 	free(info->autoarg);
 	free(info->autoret);
@@ -1009,14 +1009,14 @@ static void print_info(void *unused, const char *fmt, ...)
 	va_end(ap);
 }
 
-void process_uftrace_info(struct uftrace_data *handle, struct uftrace_opts *opts,
+void process_motrace_info(struct motrace_data *handle, struct motrace_opts *opts,
 			  void (*process)(void *data, const char *fmt, ...), void *data)
 {
 	char buf[PATH_MAX];
 	struct stat statbuf;
 	const char *fmt = "# %-20s: %s\n";
 	uint64_t info_mask = handle->hdr.info_mask;
-	struct uftrace_info *info = &handle->info;
+	struct motrace_info *info = &handle->info;
 
 	if (info_mask == 0)
 		return;
@@ -1030,7 +1030,7 @@ void process_uftrace_info(struct uftrace_data *handle, struct uftrace_opts *opts
 	process(data, "# ==================\n");
 
 	if (info_mask & VERSION)
-		process(data, fmt, "program version", info->uftrace_version);
+		process(data, fmt, "program version", info->motrace_version);
 
 	if (info_mask & RECORD_DATE)
 		process(data, fmt, "recorded on", info->record_date);
@@ -1067,7 +1067,7 @@ void process_uftrace_info(struct uftrace_data *handle, struct uftrace_opts *opts
 		int i;
 		int nr = info->nr_tid;
 		bool first = true;
-		struct uftrace_task *task;
+		struct motrace_task *task;
 		char *task_list;
 		int sz, len;
 		char *p;
@@ -1131,7 +1131,7 @@ void process_uftrace_info(struct uftrace_data *handle, struct uftrace_opts *opts
 	if (info_mask & EXIT_STATUS) {
 		int status = info->exit_status;
 
-		if (status == UFTRACE_EXIT_FINISHED) {
+		if (status == MOTRACE_EXIT_FINISHED) {
 			snprintf(buf, sizeof(buf), "terminated by finish trigger");
 		}
 		else if (WIFEXITED(status)) {
@@ -1190,12 +1190,12 @@ out:
 	process(data, "\n");
 }
 
-static void print_task(struct uftrace_data *handle, struct uftrace_task *t)
+static void print_task(struct motrace_data *handle, struct motrace_task *t)
 {
 	char flags[6] = "     ";
 	struct stat stbuf;
 	char *filename = NULL;
-	struct uftrace_sess_ref *sref = &t->sref;
+	struct motrace_sess_ref *sref = &t->sref;
 
 	xasprintf(&filename, "%s/%d.dat", handle->dirname, t->tid);
 	if (stat(filename, &stbuf) < 0)
@@ -1230,27 +1230,27 @@ static void print_task(struct uftrace_data *handle, struct uftrace_task *t)
 	free(filename);
 }
 
-static void print_task_info(struct uftrace_data *handle)
+static void print_task_info(struct motrace_data *handle)
 {
 	struct rb_node *n;
-	struct uftrace_task *t;
+	struct motrace_task *t;
 
 	pr_out("#%23s  %5s  %*s  %-16s  %s\n", "TIMESTAMP     ", "FLAGS", TASK_ID_LEN + 2,
 	       "   TID   ", "TASK", "DATA SIZE");
 
 	n = rb_first(&handle->sessions.tasks);
 	while (n != NULL) {
-		t = rb_entry(n, struct uftrace_task, node);
+		t = rb_entry(n, struct motrace_task, node);
 		n = rb_next(n);
 
 		print_task(handle, t);
 	}
 }
 
-int command_info(int argc, char *argv[], struct uftrace_opts *opts)
+int command_info(int argc, char *argv[], struct motrace_opts *opts)
 {
 	int ret;
-	struct uftrace_data handle;
+	struct motrace_data handle;
 
 	ret = open_info_file(opts, &handle);
 	if (ret < 0) {
@@ -1259,17 +1259,17 @@ int command_info(int argc, char *argv[], struct uftrace_opts *opts)
 	}
 
 	if (opts->print_symtab) {
-		struct uftrace_sym_info sinfo = {
+		struct motrace_sym_info sinfo = {
 			.dirname = opts->dirname,
 			.filename = opts->exename,
 			.flags = SYMTAB_FL_USE_SYMFILE | SYMTAB_FL_DEMANGLE,
 		};
-		struct uftrace_module *mod;
+		struct motrace_module *mod;
 		char build_id[BUILD_ID_STR_SIZE];
 		int i;
 
 		if (!opts->exename) {
-			pr_use("Usage: uftrace info --symbols [COMMAND]\n");
+			pr_use("Usage: motrace info --symbols [COMMAND]\n");
 			return -1;
 		}
 
@@ -1300,7 +1300,7 @@ int command_info(int argc, char *argv[], struct uftrace_opts *opts)
 		goto out;
 	}
 
-	process_uftrace_info(&handle, opts, print_info, NULL);
+	process_motrace_info(&handle, opts, print_info, NULL);
 
 out:
 	close_data_file(opts, &handle);
@@ -1311,18 +1311,18 @@ out:
 #ifdef UNIT_TEST
 TEST_CASE(info_command)
 {
-	struct uftrace_opts opts = {
+	struct motrace_opts opts = {
 		.dirname = "info-cmd-test",
 		.exename = read_exename(),
 		.max_stack = 10,
 		.depth = OPT_DEPTH_DEFAULT,
 	};
-	struct uftrace_data handle;
+	struct motrace_data handle;
 
 	TEST_EQ(prepare_test_data(&opts, &handle), 0);
 
 	pr_dbg("process info section in the data\n");
-	process_uftrace_info(&handle, &opts, print_info, NULL);
+	process_motrace_info(&handle, &opts, print_info, NULL);
 
 	if (handle.hdr.feat_mask & PERF_EVENT) {
 		if (setup_perf_data(&handle) == 0)

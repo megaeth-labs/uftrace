@@ -1,9 +1,11 @@
-#ifndef UFTRACE_FILTER_H
-#define UFTRACE_FILTER_H
+#ifndef MOTRACE_FILTER_H
+#define MOTRACE_FILTER_H
 
 #include <regex.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 #include "utils/arch.h"
 #include "utils/argspec.h"
@@ -65,7 +67,32 @@ enum trigger_read_type {
 	TRIGGER_READ_PMU_BRANCH = 16,
 };
 
-struct uftrace_trigger {
+enum filter_cond_op {
+	FILTER_OP_EQ,
+	FILTER_OP_NE,
+	FILTER_OP_GT,
+	FILTER_OP_GE,
+	FILTER_OP_LT,
+	FILTER_OP_LE,
+	FILTER_OP_BETWEEN,
+};
+
+struct motrace_filter_between_cond {
+	long l;
+	long h;
+};
+
+struct motrace_filter_cond {
+	int idx; /* argument index, 0 if disabled */
+	int off; /* byte offset for memory comparison, -1 if direct value */
+	int size; /* size of the data in bytes for memory comparison */
+	enum filter_cond_op op;
+	int num_off; // number of pointer offsets
+	int *ptr_off; // array of pointer offsets
+	void *val; /* pointer to the value */
+};
+
+struct motrace_trigger {
 	enum trigger_flag flags;
 	enum trigger_flag clear_flags;
 	int depth;
@@ -75,40 +102,41 @@ struct uftrace_trigger {
 	enum filter_mode fmode;
 	enum filter_mode lmode;
 	enum trigger_read_type read;
+	struct motrace_filter_cond cond;
 	struct list_head *pargs;
 };
 
-struct uftrace_filter {
+struct motrace_filter {
 	struct rb_node node;
 	char *name;
 	uint64_t start;
 	uint64_t end;
 	struct list_head args;
-	struct uftrace_trigger trigger;
+	struct motrace_trigger trigger;
 };
 
-enum uftrace_pattern_type {
+enum motrace_pattern_type {
 	PATT_NONE,
 	PATT_SIMPLE,
 	PATT_REGEX,
 	PATT_GLOB,
 };
 
-struct uftrace_pattern {
-	enum uftrace_pattern_type type;
+struct motrace_pattern {
+	enum motrace_pattern_type type;
 	char *patt;
 	regex_t re;
 };
 
-enum uftrace_trace_state {
+enum motrace_trace_state {
 	TRACE_STATE_NONE,
 	TRACE_STATE_OFF,
 	TRACE_STATE_ON,
 };
 
-struct uftrace_filter_setting {
-	enum uftrace_pattern_type ptype;
-	enum uftrace_cpu_arch arch;
+struct motrace_filter_setting {
+	enum motrace_pattern_type ptype;
+	enum motrace_cpu_arch arch;
 	bool auto_args;
 	bool allow_kernel;
 	bool lp64;
@@ -117,9 +145,9 @@ struct uftrace_filter_setting {
 	void *info_str;
 };
 
-struct uftrace_triggers_info {
+struct motrace_triggers_info {
 	/* filters, trigger actions, arg/retval specs */
-	/* container type: struct uftrace_filter */
+	/* container type: struct motrace_filter */
 	struct rb_root root;
 
 	/* count of registered opt-in filters (-F) */
@@ -130,49 +158,51 @@ struct uftrace_triggers_info {
 	int loc_count;
 };
 
-typedef void (*trigger_fn_t)(struct uftrace_trigger *tr, void *arg);
+typedef void (*trigger_fn_t)(struct motrace_trigger *tr, void *arg);
 
-struct uftrace_sym_info;
+struct motrace_sym_info;
 
-void uftrace_setup_filter(char *filter_str, struct uftrace_sym_info *sinfo,
-			  struct uftrace_triggers_info *triggers,
-			  struct uftrace_filter_setting *setting);
-void uftrace_setup_trigger(char *trigger_str, struct uftrace_sym_info *sinfo,
-			   struct uftrace_triggers_info *triggers,
-			   struct uftrace_filter_setting *setting);
-void uftrace_setup_argument(char *args_str, struct uftrace_sym_info *sinfo,
-			    struct uftrace_triggers_info *triggers,
-			    struct uftrace_filter_setting *setting);
-void uftrace_setup_retval(char *retval_str, struct uftrace_sym_info *sinfo,
-			  struct uftrace_triggers_info *triggers,
-			  struct uftrace_filter_setting *setting);
-void uftrace_setup_caller_filter(char *filter_str, struct uftrace_sym_info *sinfo,
-				 struct uftrace_triggers_info *triggers,
-				 struct uftrace_filter_setting *setting);
-void uftrace_setup_hide_filter(char *filter_str, struct uftrace_sym_info *sinfo,
-			       struct uftrace_triggers_info *triggers,
-			       struct uftrace_filter_setting *setting);
-void uftrace_setup_loc_filter(char *filter_str, struct uftrace_sym_info *sinfo,
-			      struct uftrace_triggers_info *triggers,
-			      struct uftrace_filter_setting *setting);
+void motrace_setup_filter(char *filter_str, struct motrace_sym_info *sinfo,
+			  struct motrace_triggers_info *triggers,
+			  struct motrace_filter_setting *setting);
+void motrace_setup_trigger(char *trigger_str, struct motrace_sym_info *sinfo,
+			   struct motrace_triggers_info *triggers,
+			   struct motrace_filter_setting *setting);
+void motrace_setup_argument(char *args_str, struct motrace_sym_info *sinfo,
+			    struct motrace_triggers_info *triggers,
+			    struct motrace_filter_setting *setting);
+void motrace_setup_retval(char *retval_str, struct motrace_sym_info *sinfo,
+			  struct motrace_triggers_info *triggers,
+			  struct motrace_filter_setting *setting);
+void motrace_setup_caller_filter(char *filter_str, struct motrace_sym_info *sinfo,
+				 struct motrace_triggers_info *triggers,
+				 struct motrace_filter_setting *setting);
+void motrace_setup_hide_filter(char *filter_str, struct motrace_sym_info *sinfo,
+			       struct motrace_triggers_info *triggers,
+			       struct motrace_filter_setting *setting);
+void motrace_setup_loc_filter(char *filter_str, struct motrace_sym_info *sinfo,
+			      struct motrace_triggers_info *triggers,
+			      struct motrace_filter_setting *setting);
 
-struct uftrace_triggers_info uftrace_deep_copy_triggers(struct uftrace_triggers_info *src);
-struct uftrace_filter *uftrace_match_filter(uint64_t ip, struct rb_root *root,
-					    struct uftrace_trigger *tr);
-void uftrace_cleanup_filter(struct rb_root *root);
-void uftrace_cleanup_triggers(struct uftrace_triggers_info *triggers);
-void uftrace_print_filter(struct rb_root *root);
-int uftrace_count_filter(struct rb_root *root, unsigned long flag);
+struct motrace_triggers_info motrace_deep_copy_triggers(struct motrace_triggers_info *src);
+struct motrace_filter *motrace_match_filter(uint64_t ip, struct rb_root *root,
+					    struct motrace_trigger *tr);
+void motrace_cleanup_filter(struct rb_root *root);
+void motrace_cleanup_triggers(struct motrace_triggers_info *triggers);
+void motrace_print_filter(struct rb_root *root);
+int motrace_count_filter(struct rb_root *root, unsigned long flag);
 
-void init_filter_pattern(enum uftrace_pattern_type type, struct uftrace_pattern *p, char *str);
-bool match_filter_pattern(struct uftrace_pattern *p, char *name);
-void free_filter_pattern(struct uftrace_pattern *p);
-enum uftrace_pattern_type parse_filter_pattern(const char *str);
-const char *get_filter_pattern(enum uftrace_pattern_type ptype);
+bool motrace_eval_cond(struct motrace_filter_cond *cond, void *val);
 
-char *uftrace_clear_kernel(char *filter_str);
+void init_filter_pattern(enum motrace_pattern_type type, struct motrace_pattern *p, char *str);
+bool match_filter_pattern(struct motrace_pattern *p, char *name);
+void free_filter_pattern(struct motrace_pattern *p);
+enum motrace_pattern_type parse_filter_pattern(const char *str);
+const char *get_filter_pattern(enum motrace_pattern_type ptype);
 
-int setup_trigger_action(char *str, struct uftrace_trigger *tr, char **module,
-			 unsigned long orig_flags, struct uftrace_filter_setting *setting);
+char *motrace_clear_kernel(char *filter_str);
 
-#endif /* UFTRACE_FILTER_H */
+int setup_trigger_action(char *str, struct motrace_trigger *tr, char **module,
+			 unsigned long orig_flags, struct motrace_filter_setting *setting);
+
+#endif /* MOTRACE_FILTER_H */

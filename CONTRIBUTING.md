@@ -1,20 +1,20 @@
-Contributing to uftrace
+Contributing to motrace
 =======================
 
-Thanks for considering contribution to uftrace.  You can git clone the
-uftrace source on the following address and send PR with your patch.  But,
+Thanks for considering contribution to motrace.  You can git clone the
+motrace source on the following address and send PR with your patch.  But,
 before doing that, I recommend you to read this to follow the conventions.
 
-  https://github.com/namhyung/uftrace
+  https://github.com/namhyung/motrace
 
 
 Coding style
 ------------
-The uftrace is written in C and mostly follows
+The motrace is written in C and mostly follows
 [Linux kernel coding style](https://www.kernel.org/doc/Documentation/process/coding-style.rst)
 with a few differences.
 
-The uftrace repository provides a way to automatically apply formatting
+The motrace repository provides a way to automatically apply formatting
 with the help of [pre-commit](https://pre-commit.com) and
 [clang-format](https://clang.llvm.org/docs/ClangFormat.html) so that
 our source code has a consistent coding style at all times.
@@ -24,7 +24,7 @@ or higher is required.  The installation can be done as follows.
 
     $ python3 -m pip install pre-commit
 
-Then you can simply install a pre-commit hook inside the uftrace source
+Then you can simply install a pre-commit hook inside the motrace source
 directory as follows.
 
     $ pre-commit install
@@ -40,7 +40,7 @@ whenever you try to create a commit as follows.
     - files were modified by this hook
 
 If your change doesn't follow the coding style, then clang-format check
-fails and also modifies your code to follow the pre-configured uftrace
+fails and also modifies your code to follow the pre-configured motrace
 coding style, which is written at [.clang-format](.clang-format).
 
 If the code is modified by clang-format, then please run `git add -u`
@@ -59,7 +59,7 @@ area and automatically reformatted if the check fails.
 Include subject word in message header
 --------------------------------------
 
-Although uftrace has a small codebase, I believe it's a good convention
+Although motrace has a small codebase, I believe it's a good convention
 to prefix your subject line with colon.  This lets me and other
 developers more easily distinguish patches from other subject.
 

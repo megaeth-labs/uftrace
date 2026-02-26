@@ -95,8 +95,8 @@ int mcount_setup_trampoline(struct mcount_dynamic_info *mdi)
 	return 0;
 }
 
-static void read_patchable_loc(struct mcount_dynamic_info *mdi, struct uftrace_elf_data *elf,
-			       struct uftrace_elf_iter *iter, unsigned long offset)
+static void read_patchable_loc(struct mcount_dynamic_info *mdi, struct motrace_elf_data *elf,
+			       struct motrace_elf_iter *iter, unsigned long offset)
 {
 	typeof(iter->shdr) *shdr = &iter->shdr;
 	unsigned i;
@@ -117,10 +117,10 @@ static void read_patchable_loc(struct mcount_dynamic_info *mdi, struct uftrace_e
 	}
 }
 
-void mcount_arch_find_module(struct mcount_dynamic_info *mdi, struct uftrace_symtab *symtab)
+void mcount_arch_find_module(struct mcount_dynamic_info *mdi, struct motrace_symtab *symtab)
 {
-	struct uftrace_elf_data elf;
-	struct uftrace_elf_iter iter;
+	struct motrace_elf_data elf;
+	struct motrace_elf_iter iter;
 	unsigned i = 0;
 
 	mdi->type = DYNAMIC_NONE;
@@ -143,7 +143,7 @@ void mcount_arch_find_module(struct mcount_dynamic_info *mdi, struct uftrace_sym
 	 * signature.
 	 */
 	for (i = 0; i < symtab->nr_sym; i++) {
-		struct uftrace_symbol *sym = &symtab->sym[i];
+		struct motrace_symbol *sym = &symtab->sym[i];
 		void *code_addr = (void *)sym->addr + mdi->map->start;
 
 		if (sym->type != ST_LOCAL_FUNC && sym->type != ST_GLOBAL_FUNC)
@@ -173,7 +173,7 @@ void mcount_arch_find_module(struct mcount_dynamic_info *mdi, struct uftrace_sym
 	}
 
 out:
-	pr_dbg("dynamic patch type: %s: %d (%s)\n", uftrace_basename(mdi->map->libname), mdi->type,
+	pr_dbg("dynamic patch type: %s: %d (%s)\n", motrace_basename(mdi->map->libname), mdi->type,
 	       mdi_type_names[mdi->type]);
 
 	elf_finish(&elf);
@@ -185,7 +185,7 @@ static unsigned long get_target_addr(struct mcount_dynamic_info *mdi, unsigned l
 	return (mdi->trampoline - addr - 4) >> 2;
 }
 
-static int patch_code(struct mcount_dynamic_info *mdi, struct uftrace_symbol *sym)
+static int patch_code(struct mcount_dynamic_info *mdi, struct motrace_symbol *sym)
 {
 	uint32_t push = 0xa9bf7bfd; /* STP  x29, x30, [sp, #-0x10]! */
 	uint32_t call;
@@ -209,7 +209,7 @@ static int patch_code(struct mcount_dynamic_info *mdi, struct uftrace_symbol *sy
 	return INSTRUMENT_SUCCESS;
 }
 
-static int patch_patchable_func(struct mcount_dynamic_info *mdi, struct uftrace_symbol *sym)
+static int patch_patchable_func(struct mcount_dynamic_info *mdi, struct motrace_symbol *sym)
 {
 	void *insn = (void *)sym->addr + mdi->map->start;
 
@@ -227,7 +227,7 @@ static int patch_patchable_func(struct mcount_dynamic_info *mdi, struct uftrace_
 	return INSTRUMENT_SUCCESS;
 }
 
-static int patch_normal_func(struct mcount_dynamic_info *mdi, struct uftrace_symbol *sym,
+static int patch_normal_func(struct mcount_dynamic_info *mdi, struct motrace_symbol *sym,
 			     struct mcount_disasm_engine *disasm)
 {
 	struct mcount_disasm_info info = {
@@ -248,7 +248,7 @@ static int patch_normal_func(struct mcount_dynamic_info *mdi, struct uftrace_sym
 	return INSTRUMENT_SUCCESS;
 }
 
-int mcount_patch_func(struct mcount_dynamic_info *mdi, struct uftrace_symbol *sym,
+int mcount_patch_func(struct mcount_dynamic_info *mdi, struct motrace_symbol *sym,
 		      struct mcount_disasm_engine *disasm, unsigned min_size)
 {
 	int result = INSTRUMENT_SKIPPED;
@@ -275,7 +275,7 @@ int mcount_patch_func(struct mcount_dynamic_info *mdi, struct uftrace_symbol *sy
 	return result;
 }
 
-static void revert_normal_func(struct mcount_dynamic_info *mdi, struct uftrace_symbol *sym,
+static void revert_normal_func(struct mcount_dynamic_info *mdi, struct motrace_symbol *sym,
 			       struct mcount_disasm_engine *disasm)
 {
 	void *addr = (void *)(uintptr_t)sym->addr + mdi->map->start;

@@ -4,7 +4,7 @@
 #include "utils/filter.h"
 #include "utils/utils.h"
 
-static int mcount_get_register_arg(struct mcount_arg_context *ctx, struct uftrace_arg_spec *spec)
+static int mcount_get_register_arg(struct mcount_arg_context *ctx, struct motrace_arg_spec *spec)
 {
 	struct mcount_regs *regs = ctx->regs;
 	int reg_idx;
@@ -82,7 +82,7 @@ static int mcount_get_register_arg(struct mcount_arg_context *ctx, struct uftrac
 	return 0;
 }
 
-static void mcount_get_stack_arg(struct mcount_arg_context *ctx, struct uftrace_arg_spec *spec)
+static void mcount_get_stack_arg(struct mcount_arg_context *ctx, struct motrace_arg_spec *spec)
 {
 	int offset;
 	unsigned long *addr = ctx->stack_base;
@@ -122,9 +122,9 @@ static void mcount_get_stack_arg(struct mcount_arg_context *ctx, struct uftrace_
 	}
 }
 
-static void mcount_get_struct_arg(struct mcount_arg_context *ctx, struct uftrace_arg_spec *spec)
+static void mcount_get_struct_arg(struct mcount_arg_context *ctx, struct motrace_arg_spec *spec)
 {
-	struct uftrace_arg_spec reg_spec = {
+	struct motrace_arg_spec reg_spec = {
 		.type = ARG_TYPE_REG,
 	};
 	void *ptr = ctx->val.p;
@@ -159,7 +159,7 @@ static void mcount_get_struct_arg(struct mcount_arg_context *ctx, struct uftrace
 	}
 }
 
-void mcount_arch_get_arg(struct mcount_arg_context *ctx, struct uftrace_arg_spec *spec)
+void mcount_arch_get_arg(struct mcount_arg_context *ctx, struct motrace_arg_spec *spec)
 {
 	if (spec->fmt == ARG_FMT_STRUCT) {
 		mcount_get_struct_arg(ctx, spec);
@@ -170,7 +170,7 @@ void mcount_arch_get_arg(struct mcount_arg_context *ctx, struct uftrace_arg_spec
 		mcount_get_stack_arg(ctx, spec);
 }
 
-void mcount_arch_get_retval(struct mcount_arg_context *ctx, struct uftrace_arg_spec *spec)
+void mcount_arch_get_retval(struct mcount_arg_context *ctx, struct motrace_arg_spec *spec)
 {
 	if (spec->fmt == ARG_FMT_STRUCT)
 		mcount_memcpy4(ctx->val.v, ctx->retval, sizeof(long));

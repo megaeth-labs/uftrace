@@ -8,10 +8,10 @@ fi
 pr=$1
 
 if [ -x "$(command -v wget)" ]; then
-    wget https://github.com/namhyung/uftrace/pull/$pr.patch
+    wget https://github.com/namhyung/motrace/pull/$pr.patch
     exit 0
 elif [ -x "$(command -v curl)" ]; then
-    curl -L https://github.com/namhyung/uftrace/pull/$pr.patch > $pr.patch
+    curl -L https://github.com/namhyung/motrace/pull/$pr.patch > $pr.patch
     exit 0
 else
     echo "You need wget or curl to run this script."

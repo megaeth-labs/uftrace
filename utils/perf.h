@@ -1,5 +1,5 @@
-#ifndef UFTRACE_PERF_H
-#define UFTRACE_PERF_H
+#ifndef MOTRACE_PERF_H
+#define MOTRACE_PERF_H
 
 #include <linux/perf_event.h>
 #include <stdbool.h>
@@ -11,7 +11,7 @@
 
 #define COMM_LEN 16
 
-struct uftrace_perf_writer {
+struct motrace_perf_writer {
 	int *event_fd;
 	void **page;
 	uint64_t *data_pos;
@@ -55,17 +55,17 @@ struct perf_context_switch_event {
 	struct sample_id sample_id;
 };
 
-struct uftrace_ctxsw_event {
+struct motrace_ctxsw_event {
 	bool out;
 	bool preempt;
 };
 
-struct uftrace_task_event {
+struct motrace_task_event {
 	int pid;
 	int ppid;
 };
 
-struct uftrace_comm_event {
+struct motrace_comm_event {
 	int pid;
 	bool exec;
 	char comm[COMM_LEN];
@@ -73,23 +73,23 @@ struct uftrace_comm_event {
 
 #ifdef HAVE_PERF_CLOCKID
 
-int setup_perf_record(struct uftrace_perf_writer *perf, int nr_cpu, int pid, const char *dirname,
+int setup_perf_record(struct motrace_perf_writer *perf, int nr_cpu, int pid, const char *dirname,
 		      int use_ctxsw);
-void finish_perf_record(struct uftrace_perf_writer *perf);
-void record_perf_data(struct uftrace_perf_writer *perf, int cpu, int sock);
+void finish_perf_record(struct motrace_perf_writer *perf);
+void record_perf_data(struct motrace_perf_writer *perf, int cpu, int sock);
 
 #else /* !HAVE_PERF_CLOCKID */
 
-static inline int setup_perf_record(struct uftrace_perf_writer *perf, int nr_cpu, int pid,
+static inline int setup_perf_record(struct motrace_perf_writer *perf, int nr_cpu, int pid,
 				    const char *dirname, int use_ctxsw)
 {
 	return -1;
 }
 
-static inline void finish_perf_record(struct uftrace_perf_writer *perf)
+static inline void finish_perf_record(struct motrace_perf_writer *perf)
 {
 }
-static inline void record_perf_data(struct uftrace_perf_writer *perf, int cpu, int sock)
+static inline void record_perf_data(struct motrace_perf_writer *perf, int cpu, int sock)
 {
 }
 
@@ -112,7 +112,7 @@ static inline void record_perf_data(struct uftrace_perf_writer *perf, int cpu, i
 
 #define PERF_RECORD_MISC_SWITCH_OUT_PREEMPT (1 << 14)
 
-struct uftrace_perf_reader {
+struct motrace_perf_reader {
 	FILE *fp;
 	bool valid;
 	bool done;
@@ -120,21 +120,21 @@ struct uftrace_perf_reader {
 	int tid;
 	uint64_t time;
 	union {
-		struct uftrace_ctxsw_event ctxsw;
-		struct uftrace_task_event task;
-		struct uftrace_comm_event comm;
+		struct motrace_ctxsw_event ctxsw;
+		struct motrace_task_event task;
+		struct motrace_comm_event comm;
 	} u;
 };
 
-struct uftrace_data;
-struct uftrace_record;
+struct motrace_data;
+struct motrace_record;
 
-int setup_perf_data(struct uftrace_data *handle);
-void finish_perf_data(struct uftrace_data *handle);
-int read_perf_data(struct uftrace_data *handle);
-struct uftrace_record *get_perf_record(struct uftrace_data *handle,
-				       struct uftrace_perf_reader *perf);
-void update_perf_task_comm(struct uftrace_data *handle);
-void process_perf_event(struct uftrace_data *handle);
+int setup_perf_data(struct motrace_data *handle);
+void finish_perf_data(struct motrace_data *handle);
+int read_perf_data(struct motrace_data *handle);
+struct motrace_record *get_perf_record(struct motrace_data *handle,
+				       struct motrace_perf_reader *perf);
+void update_perf_task_comm(struct motrace_data *handle);
+void process_perf_event(struct motrace_data *handle);
 
-#endif /* UFTRACE_PERF_H */
+#endif /* MOTRACE_PERF_H */

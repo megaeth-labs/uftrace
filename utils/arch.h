@@ -1,12 +1,12 @@
 /*
  * Architecture specific code and data
  */
-#ifndef UFTRACE_ARCH_H
-#define UFTRACE_ARCH_H
+#ifndef MOTRACE_ARCH_H
+#define MOTRACE_ARCH_H
 
 #include <stdbool.h>
 
-enum uftrace_cpu_arch {
+enum motrace_cpu_arch {
 	UFT_CPU_NONE,
 	UFT_CPU_X86_64,
 	UFT_CPU_ARM,
@@ -15,7 +15,7 @@ enum uftrace_cpu_arch {
 	UFT_CPU_RISCV64,
 };
 
-static inline enum uftrace_cpu_arch host_cpu_arch(void)
+static inline enum motrace_cpu_arch host_cpu_arch(void)
 {
 #if defined(__x86_64__)
 	return UFT_CPU_X86_64;
@@ -32,7 +32,7 @@ static inline enum uftrace_cpu_arch host_cpu_arch(void)
 #endif
 }
 
-static inline bool arch_is_lp64(enum uftrace_cpu_arch arch)
+static inline bool arch_is_lp64(enum motrace_cpu_arch arch)
 {
 	switch (arch) {
 	case UFT_CPU_X86_64:
@@ -44,7 +44,7 @@ static inline bool arch_is_lp64(enum uftrace_cpu_arch arch)
 	}
 }
 
-enum uftrace_x86_64_reg_index {
+enum motrace_x86_64_reg_index {
 	UFT_X86_64_REG_INT_BASE = 0,
 	/* integer registers */
 	UFT_X86_64_REG_RDI,
@@ -66,7 +66,7 @@ enum uftrace_x86_64_reg_index {
 	UFT_X86_64_REG_XMM7,
 };
 
-enum uftrace_arm_reg_index {
+enum motrace_arm_reg_index {
 	UFT_ARM_REG_INT_BASE = 0,
 	/* integer registers */
 	UFT_ARM_REG_R0,
@@ -104,7 +104,7 @@ enum uftrace_arm_reg_index {
 	UFT_ARM_REG_D7,
 };
 
-enum uftrace_aarch64_reg_index {
+enum motrace_aarch64_reg_index {
 	UFT_AARCH64_REG_INT_BASE = 0,
 	/* integer registers */
 	UFT_AARCH64_REG_X0,
@@ -139,7 +139,7 @@ enum uftrace_aarch64_reg_index {
 	UFT_AARCH64_REG_D7,
 };
 
-enum uftrace_i386_reg_index {
+enum motrace_i386_reg_index {
 	UFT_I386_REG_INT_BASE = 0,
 	/* integer registers */
 	UFT_I386_REG_ECX,
@@ -157,7 +157,7 @@ enum uftrace_i386_reg_index {
 	UFT_I386_REG_XMM7,
 };
 
-enum uftrace_riscv64_reg_index {
+enum motrace_riscv64_reg_index {
 	UFT_RISCV64_REG_INT_BASE = 0,
 	/* integer argument registers */
 	UFT_RISCV64_REG_A0,
@@ -181,11 +181,11 @@ enum uftrace_riscv64_reg_index {
 	UFT_RISCV64_REG_FA7,
 };
 
-int arch_register_number(enum uftrace_cpu_arch arch, char *reg_name);
-int arch_register_at(enum uftrace_cpu_arch arch, bool integer, int idx);
-int arch_register_index(enum uftrace_cpu_arch arch, int idx);
+int arch_register_number(enum motrace_cpu_arch arch, char *reg_name);
+int arch_register_at(enum motrace_cpu_arch arch, bool integer, int idx);
+int arch_register_index(enum motrace_cpu_arch arch, int idx);
 
-const char *arch_register_dwarf_name(enum uftrace_cpu_arch arch, int dwarf_reg);
-const char *arch_register_argspec_name(enum uftrace_cpu_arch arch, bool integer, int idx);
+const char *arch_register_dwarf_name(enum motrace_cpu_arch arch, int dwarf_reg);
+const char *arch_register_argspec_name(enum motrace_cpu_arch arch, bool integer, int idx);
 
-#endif /* UFTRACE_ARCH_H */
+#endif /* MOTRACE_ARCH_H */

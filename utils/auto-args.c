@@ -5,7 +5,7 @@
 #define PR_FMT "filter"
 #define PR_DOMAIN DBG_FILTER
 
-#include "uftrace.h"
+#include "motrace.h"
 #include "utils/argspec.h"
 #include "utils/auto-args.h"
 #include "utils/dwarf.h"
@@ -20,24 +20,24 @@ static struct rb_root auto_argspec = RB_ROOT;
 static struct rb_root auto_retspec = RB_ROOT;
 static struct rb_root auto_enum = RB_ROOT;
 
-extern void update_trigger(struct uftrace_filter *filter, struct uftrace_trigger *tr,
+extern void update_trigger(struct motrace_filter *filter, struct motrace_trigger *tr,
 			   bool exact_match);
-extern int setup_trigger_action(char *str, struct uftrace_trigger *tr, char **module,
-				unsigned long orig_flags, struct uftrace_filter_setting *setting);
+extern int setup_trigger_action(char *str, struct motrace_trigger *tr, char **module,
+				unsigned long orig_flags, struct motrace_filter_setting *setting);
 
-static void add_auto_args(struct rb_root *root, struct uftrace_filter *entry,
-			  struct uftrace_trigger *tr)
+static void add_auto_args(struct rb_root *root, struct motrace_filter *entry,
+			  struct motrace_trigger *tr)
 {
 	struct rb_node *parent = NULL;
 	struct rb_node **p = &root->rb_node;
-	struct uftrace_filter *iter, *new;
+	struct motrace_filter *iter, *new;
 	int cmp;
 
 	pr_dbg2("add auto-argument for %s\n", entry->name);
 
 	while (*p) {
 		parent = *p;
-		iter = rb_entry(parent, struct uftrace_filter, node);
+		iter = rb_entry(parent, struct motrace_filter, node);
 
 		cmp = strcmp(iter->name, entry->name);
 		if (cmp == 0) {
@@ -64,7 +64,7 @@ static void add_auto_args(struct rb_root *root, struct uftrace_filter *entry,
 }
 
 static void build_auto_args(const char *args_str, struct rb_root *root, unsigned long flag,
-			    struct uftrace_filter_setting *setting)
+			    struct motrace_filter_setting *setting)
 {
 	struct strv specs = STRV_INIT;
 	char *name;
@@ -77,11 +77,11 @@ static void build_auto_args(const char *args_str, struct rb_root *root, unsigned
 
 	strv_for_each(&specs, name, j) {
 		LIST_HEAD(args);
-		struct uftrace_arg_spec *arg;
-		struct uftrace_trigger tr = {
+		struct motrace_arg_spec *arg;
+		struct motrace_trigger tr = {
 			.pargs = &args,
 		};
-		struct uftrace_filter entry = {
+		struct motrace_filter entry = {
 			.name = NULL,
 		};
 		char *p = strchr(name, '@');
@@ -109,7 +109,7 @@ static void build_auto_args(const char *args_str, struct rb_root *root, unsigned
 
 next:
 		while (!list_empty(&args)) {
-			arg = list_first_entry(&args, struct uftrace_arg_spec, list);
+			arg = list_first_entry(&args, struct motrace_arg_spec, list);
 			list_del(&arg->list);
 			free_arg_spec(arg);
 		}
@@ -117,16 +117,16 @@ next:
 	strv_free(&specs);
 }
 
-static struct uftrace_filter *find_auto_args(struct rb_root *root, char *name)
+static struct motrace_filter *find_auto_args(struct rb_root *root, char *name)
 {
 	struct rb_node *parent = NULL;
 	struct rb_node **p = &root->rb_node;
-	struct uftrace_filter *iter;
+	struct motrace_filter *iter;
 	int cmp;
 
 	while (*p) {
 		parent = *p;
-		iter = rb_entry(parent, struct uftrace_filter, node);
+		iter = rb_entry(parent, struct motrace_filter, node);
 
 		cmp = strcmp(iter->name, name);
 		if (cmp == 0)
@@ -141,15 +141,15 @@ static struct uftrace_filter *find_auto_args(struct rb_root *root, char *name)
 	return NULL;
 }
 
-static struct uftrace_filter *dwarf_argspec_list;
+static struct motrace_filter *dwarf_argspec_list;
 
-static struct uftrace_filter *find_dwarf_argspec(struct uftrace_filter *filter,
-						 struct uftrace_dbg_info *dinfo, bool is_retval,
-						 struct uftrace_filter_setting *setting)
+static struct motrace_filter *find_dwarf_argspec(struct motrace_filter *filter,
+						 struct motrace_dbg_info *dinfo, bool is_retval,
+						 struct motrace_filter_setting *setting)
 {
 	LIST_HEAD(dwarf_argspec);
-	struct uftrace_filter *dwarf_filter;
-	struct uftrace_trigger dwarf_tr = {
+	struct motrace_filter *dwarf_filter;
+	struct motrace_trigger dwarf_tr = {
 		.pargs = &dwarf_argspec,
 	};
 	char *arg_str;
@@ -185,11 +185,11 @@ static struct uftrace_filter *find_dwarf_argspec(struct uftrace_filter *filter,
 	return dwarf_filter;
 }
 
-struct uftrace_filter *find_auto_argspec(struct uftrace_filter *filter, struct uftrace_trigger *tr,
-					 struct uftrace_dbg_info *dinfo,
-					 struct uftrace_filter_setting *setting)
+struct motrace_filter *find_auto_argspec(struct motrace_filter *filter, struct motrace_trigger *tr,
+					 struct motrace_dbg_info *dinfo,
+					 struct motrace_filter_setting *setting)
 {
-	struct uftrace_filter *auto_arg = NULL;
+	struct motrace_filter *auto_arg = NULL;
 
 	if (debug_info_has_argspec(dinfo))
 		auto_arg = find_dwarf_argspec(filter, dinfo, false, setting);
@@ -200,11 +200,11 @@ struct uftrace_filter *find_auto_argspec(struct uftrace_filter *filter, struct u
 	return auto_arg;
 }
 
-struct uftrace_filter *find_auto_retspec(struct uftrace_filter *filter, struct uftrace_trigger *tr,
-					 struct uftrace_dbg_info *dinfo,
-					 struct uftrace_filter_setting *setting)
+struct motrace_filter *find_auto_retspec(struct motrace_filter *filter, struct motrace_trigger *tr,
+					 struct motrace_dbg_info *dinfo,
+					 struct motrace_filter_setting *setting)
 {
-	struct uftrace_filter *auto_ret = NULL;
+	struct motrace_filter *auto_ret = NULL;
 
 	if (debug_info_has_argspec(dinfo))
 		auto_ret = find_dwarf_argspec(filter, dinfo, true, setting);
@@ -225,7 +225,7 @@ char *get_auto_retspec_str(void)
 	return auto_retvals_list;
 }
 
-void setup_auto_args(struct uftrace_filter_setting *setting)
+void setup_auto_args(struct motrace_filter_setting *setting)
 {
 	if (!RB_EMPTY_ROOT(&auto_enum))
 		return;
@@ -236,7 +236,7 @@ void setup_auto_args(struct uftrace_filter_setting *setting)
 }
 
 void setup_auto_args_str(char *args, char *rets, char *enums,
-			 struct uftrace_filter_setting *setting)
+			 struct motrace_filter_setting *setting)
 {
 	if (!RB_EMPTY_ROOT(&auto_enum))
 		return;
@@ -249,12 +249,12 @@ void setup_auto_args_str(char *args, char *rets, char *enums,
 static void release_auto_args(struct rb_root *root)
 {
 	struct rb_node *p;
-	struct uftrace_filter *entry;
-	struct uftrace_arg_spec *arg, *tmp;
+	struct motrace_filter *entry;
+	struct motrace_arg_spec *arg, *tmp;
 
 	while (!RB_EMPTY_ROOT(root)) {
 		p = rb_first(root);
-		entry = rb_entry(p, struct uftrace_filter, node);
+		entry = rb_entry(p, struct motrace_filter, node);
 
 		rb_erase(p, root);
 
@@ -271,8 +271,8 @@ static void release_auto_args(struct rb_root *root)
 
 void finish_auto_args(void)
 {
-	struct uftrace_filter *tmp;
-	struct uftrace_arg_spec *spec;
+	struct motrace_filter *tmp;
+	struct motrace_arg_spec *spec;
 
 	release_enum_def(&auto_enum);
 	release_auto_args(&auto_argspec);
@@ -760,10 +760,10 @@ char *get_auto_enum_str(void)
 TEST_CASE(argspec_auto_args)
 {
 	char test_auto_args[] = "foo@arg1,arg2/s;bar@fparg1";
-	struct uftrace_filter *entry;
-	struct uftrace_filter key;
-	struct uftrace_arg_spec *spec;
-	struct uftrace_filter_setting setting = {
+	struct motrace_filter *entry;
+	struct motrace_filter key;
+	struct motrace_arg_spec *spec;
+	struct motrace_filter_setting setting = {
 		.lp64 = host_is_lp64(),
 	};
 	int idx = 1;
@@ -789,7 +789,7 @@ TEST_CASE(argspec_auto_args)
 	TEST_NE(entry, NULL);
 	TEST_EQ(entry->trigger.flags, TRIGGER_FL_ARGUMENT);
 
-	spec = list_first_entry(&entry->args, struct uftrace_arg_spec, list);
+	spec = list_first_entry(&entry->args, struct motrace_arg_spec, list);
 	TEST_EQ(spec->fmt, ARG_FMT_FLOAT);
 	TEST_EQ(spec->idx, 1);
 
@@ -852,7 +852,7 @@ TEST_CASE(argspec_parse_enum)
 {
 	char test_enum_str1[] = "enum xxx { ZERO, ONE = 111, TWO };";
 	char test_enum_str2[] = "enum a { AAA, BBB = 1, CCC }";
-	char test_enum_str3[] = ";enum uftrace{record=100,replay=-23,report}";
+	char test_enum_str3[] = ";enum motrace{record=100,replay=-23,report}";
 	struct rb_root enum_tree = RB_ROOT;
 	struct rb_node *node;
 	struct enum_def *e_def;
@@ -901,7 +901,7 @@ TEST_CASE(argspec_parse_enum)
 	free(str);
 
 	pr_dbg("check value increments correctly for negative numbers\n");
-	e_def = find_enum_def(&enum_tree, "uftrace");
+	e_def = find_enum_def(&enum_tree, "motrace");
 	str = convert_enum_val(e_def, -22);
 	TEST_STREQ(str, "report");
 	free(str);

@@ -669,7 +669,7 @@ out:
 
 TEST_CASE(dynamic_x86_handle_lea)
 {
-	struct uftrace_symbol sym = {
+	struct motrace_symbol sym = {
 		.name = "abc",
 		.addr = 0x3000,
 		.size = 32,
@@ -735,12 +735,12 @@ TEST_CASE(dynamic_x86_handle_lea)
 
 TEST_CASE(dynamic_x86_handle_call)
 {
-	struct uftrace_symbol sym1 = {
+	struct motrace_symbol sym1 = {
 		.name = "a",
 		.addr = 0x3000,
 		.size = 32,
 	};
-	struct uftrace_symbol sym2 = {
+	struct motrace_symbol sym2 = {
 		.name = "b",
 		.addr = 0x4000,
 		.size = 32,
@@ -818,7 +818,7 @@ TEST_CASE(dynamic_x86_handle_call)
 
 TEST_CASE(dynamic_x86_handle_jmp)
 {
-	struct uftrace_symbol sym = {
+	struct motrace_symbol sym = {
 		.name = "a",
 		.addr = 0x3000,
 		.size = 32,
@@ -922,7 +922,7 @@ TEST_CASE(dynamic_x86_handle_jmp)
 
 TEST_CASE(dynamic_x86_handle_jcc)
 {
-	struct uftrace_symbol sym = {
+	struct motrace_symbol sym = {
 		.name = "a",
 		.addr = 0x3000,
 		.size = 32,
@@ -1031,7 +1031,7 @@ TEST_CASE(dynamic_x86_handle_jcc)
 
 TEST_CASE(dynamic_x86_handle_mov_load)
 {
-	struct uftrace_symbol sym = {
+	struct motrace_symbol sym = {
 		.name = "abc",
 		.addr = 0x3000,
 		.size = 32,

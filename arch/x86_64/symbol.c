@@ -9,7 +9,7 @@
 
 #include "libmcount/internal.h"
 #include "mcount-arch.h"
-#include "uftrace.h"
+#include "motrace.h"
 #include "utils/symbol.h"
 #include "utils/utils.h"
 
@@ -17,12 +17,12 @@
 #define JMP_INSN_SIZE 6
 #define PLTGOT_SIZE 8
 
-int arch_load_dynsymtab_noplt(struct uftrace_symtab *dsymtab, struct uftrace_elf_data *elf,
+int arch_load_dynsymtab_noplt(struct motrace_symtab *dsymtab, struct motrace_elf_data *elf,
 			      unsigned long offset, unsigned long flags)
 {
-	struct uftrace_elf_iter sec_iter = {};
-	struct uftrace_elf_iter rel_iter;
-	struct uftrace_elf_iter sym_iter;
+	struct motrace_elf_iter sec_iter = {};
+	struct motrace_elf_iter rel_iter;
+	struct motrace_elf_iter sym_iter;
 	unsigned grow = SYMTAB_GROW;
 	unsigned long reloc_start = 0;
 	size_t reloc_entsize = 0;
@@ -49,7 +49,7 @@ int arch_load_dynsymtab_noplt(struct uftrace_symtab *dsymtab, struct uftrace_elf
 		return 0;
 
 	elf_for_each_rela(elf, &rel_iter) {
-		struct uftrace_symbol *sym;
+		struct motrace_symbol *sym;
 		int symidx;
 		char *name;
 
@@ -97,10 +97,10 @@ int arch_load_dynsymtab_noplt(struct uftrace_symtab *dsymtab, struct uftrace_elf
 	return dsymtab->nr_sym;
 }
 
-void mcount_arch_plthook_setup(struct plthook_data *pd, struct uftrace_elf_data *elf)
+void mcount_arch_plthook_setup(struct plthook_data *pd, struct motrace_elf_data *elf)
 {
 	struct plthook_arch_context *ctx;
-	struct uftrace_elf_iter iter;
+	struct motrace_elf_iter iter;
 	char *secname;
 
 	ctx = xzalloc(sizeof(*ctx));
@@ -120,7 +120,7 @@ void mcount_arch_plthook_setup(struct plthook_data *pd, struct uftrace_elf_data 
 unsigned long mcount_arch_plthook_addr(struct plthook_data *pd, int idx)
 {
 	struct plthook_arch_context *ctx = pd->arch;
-	struct uftrace_symbol *sym;
+	struct motrace_symbol *sym;
 
 	if (ctx->has_plt_sec) {
 		unsigned long sym_addr;

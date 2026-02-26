@@ -18,7 +18,7 @@
 #define PR_FMT "kernel"
 #define PR_DOMAIN DBG_KERNEL
 
-#include "uftrace.h"
+#include "motrace.h"
 #include "utils/filter.h"
 #include "utils/fstack.h"
 #include "utils/kernel-parser.h"
@@ -32,8 +32,8 @@ static bool kernel_tracing_enabled;
 /* tree of executed kernel functions */
 static struct rb_root kfunc_tree = RB_ROOT;
 
-static int save_kernel_files(struct uftrace_kernel_writer *kernel);
-static int load_kernel_files(struct uftrace_kernel_reader *kernel);
+static int save_kernel_files(struct motrace_kernel_writer *kernel);
+static int load_kernel_files(struct motrace_kernel_reader *kernel);
 
 struct kfilter {
 	struct list_head list;
@@ -68,7 +68,7 @@ static int set_filter_file(const char *filter_file, struct list_head *filters)
 	return 0;
 }
 
-static int set_tracing_filter(struct uftrace_kernel_writer *kernel)
+static int set_tracing_filter(struct motrace_kernel_writer *kernel)
 {
 	if (set_filter_file("set_graph_function", &kernel->filters) < 0)
 		return -1;
@@ -85,7 +85,7 @@ static int set_tracing_filter(struct uftrace_kernel_writer *kernel)
 	return 0;
 }
 
-static int set_tracing_depth(struct uftrace_kernel_writer *kernel)
+static int set_tracing_depth(struct motrace_kernel_writer *kernel)
 {
 	int ret = 0;
 	char buf[32];
@@ -96,7 +96,7 @@ static int set_tracing_depth(struct uftrace_kernel_writer *kernel)
 	return ret;
 }
 
-static int set_tracing_bufsize(struct uftrace_kernel_writer *kernel)
+static int set_tracing_bufsize(struct motrace_kernel_writer *kernel)
 {
 	int ret = 0;
 	char buf[32];
@@ -124,7 +124,7 @@ bool check_kernel_pid_filter(void)
 	return ret;
 }
 
-static int set_tracing_options(struct uftrace_kernel_writer *kernel)
+static int set_tracing_options(struct motrace_kernel_writer *kernel)
 {
 	/* old kernels don't have the options, ignore errors */
 	if (!write_tracing_file("options/function-fork", "1"))
@@ -142,7 +142,7 @@ static void add_single_filter(struct list_head *head, char *name)
 	list_add(&kfilter->list, head);
 }
 
-static void add_pattern_filter(struct list_head *head, struct uftrace_pattern *patt)
+static void add_pattern_filter(struct list_head *head, struct motrace_pattern *patt)
 {
 	char *filename;
 	FILE *fp;
@@ -174,8 +174,8 @@ static void add_pattern_filter(struct list_head *head, struct uftrace_pattern *p
 	put_tracing_file(filename);
 }
 
-static void build_kernel_filter(struct uftrace_kernel_writer *kernel, char *filter_str,
-				enum uftrace_pattern_type ptype, struct list_head *filters,
+static void build_kernel_filter(struct motrace_kernel_writer *kernel, char *filter_str,
+				enum motrace_pattern_type ptype, struct list_head *filters,
 				struct list_head *notrace)
 {
 	struct list_head *head;
@@ -189,7 +189,7 @@ static void build_kernel_filter(struct uftrace_kernel_writer *kernel, char *filt
 	strv_split(&strv, filter_str, ";");
 
 	strv_for_each(&strv, name, j) {
-		struct uftrace_pattern patt;
+		struct motrace_pattern patt;
 
 		pos = has_kernel_filter(name);
 		if (pos == NULL)
@@ -220,7 +220,7 @@ struct kevent {
 	char name[];
 };
 
-static int set_tracing_event(struct uftrace_kernel_writer *kernel)
+static int set_tracing_event(struct motrace_kernel_writer *kernel)
 {
 	struct kevent *pos, *tmp;
 
@@ -244,7 +244,7 @@ static void add_single_event(struct list_head *events, char *name)
 	list_add_tail(&kevent->list, events);
 }
 
-static void add_pattern_event(struct list_head *events, struct uftrace_pattern *patt)
+static void add_pattern_event(struct list_head *events, struct motrace_pattern *patt)
 {
 	char *filename;
 	FILE *fp;
@@ -265,8 +265,8 @@ static void add_pattern_event(struct list_head *events, struct uftrace_pattern *
 	put_tracing_file(filename);
 }
 
-static void build_kernel_event(struct uftrace_kernel_writer *kernel, char *event_str,
-			       enum uftrace_pattern_type ptype, struct list_head *events)
+static void build_kernel_event(struct motrace_kernel_writer *kernel, char *event_str,
+			       enum motrace_pattern_type ptype, struct list_head *events)
 {
 	struct strv strv = STRV_INIT;
 	char *pos, *name;
@@ -278,7 +278,7 @@ static void build_kernel_event(struct uftrace_kernel_writer *kernel, char *event
 	strv_split(&strv, event_str, ";");
 
 	strv_for_each(&strv, name, j) {
-		struct uftrace_pattern patt;
+		struct motrace_pattern patt;
 
 		pos = has_kernel_filter(name);
 		if (pos == NULL)
@@ -340,7 +340,7 @@ static int reset_tracing_files(void)
 	return 0;
 }
 
-static int __setup_kernel_tracing(struct uftrace_kernel_writer *kernel)
+static int __setup_kernel_tracing(struct motrace_kernel_writer *kernel)
 {
 	if (geteuid() != 0)
 		return -EPERM;
@@ -392,7 +392,7 @@ out:
 	return -EINVAL;
 }
 
-static void check_and_add_list(struct uftrace_kernel_writer *kernel, const char *funcs[],
+static void check_and_add_list(struct motrace_kernel_writer *kernel, const char *funcs[],
 			       size_t funcs_len, struct list_head *list)
 {
 	unsigned int i;
@@ -426,7 +426,7 @@ static void check_and_add_list(struct uftrace_kernel_writer *kernel, const char 
 	}
 }
 
-static void skip_kernel_functions(struct uftrace_kernel_writer *kernel)
+static void skip_kernel_functions(struct motrace_kernel_writer *kernel)
 {
 	const char *skip_funcs[] = {
 		/*
@@ -438,7 +438,7 @@ static void skip_kernel_functions(struct uftrace_kernel_writer *kernel)
 		 */
 		"sys_clock_gettime",
 		/*
-		 * Currently kernel tracing seems to wake up uftrace writer
+		 * Currently kernel tracing seems to wake up motrace writer
 		 * threads too often using the irq_work interrupt.  This
 		 * messes up the trace output so it'd be better hiding them.
 		 */
@@ -446,7 +446,7 @@ static void skip_kernel_functions(struct uftrace_kernel_writer *kernel)
 		/*
 		 * Disable syscall tracing in the kernel.  Note that the
 		 * kernel uses glob patterns internally, so it can use
-		 * the following regardless of the uftrace --match value.
+		 * the following regardless of the motrace --match value.
 		 */
 		"syscall_*",
 		/*
@@ -481,7 +481,7 @@ static void skip_kernel_functions(struct uftrace_kernel_writer *kernel)
  * This function sets up all necessary data structures and configure
  * kernel ftrace subsystem.
  */
-int setup_kernel_tracing(struct uftrace_kernel_writer *kernel, struct uftrace_opts *opts)
+int setup_kernel_tracing(struct motrace_kernel_writer *kernel, struct motrace_opts *opts)
 {
 	int i, n;
 	int ret;
@@ -539,7 +539,7 @@ int setup_kernel_tracing(struct uftrace_kernel_writer *kernel, struct uftrace_op
  * as binary form and saved to kernel-cpuXX.dat file in the ftrace
  * data directory.
  */
-int start_kernel_tracing(struct uftrace_kernel_writer *kernel)
+int start_kernel_tracing(struct motrace_kernel_writer *kernel)
 {
 	char *trace_file;
 	char buf[PATH_MAX];
@@ -607,7 +607,7 @@ out:
  *
  * This function read trace data for @cpu and save it to file.
  */
-int record_kernel_trace_pipe(struct uftrace_kernel_writer *kernel, int cpu, int sock)
+int record_kernel_trace_pipe(struct motrace_kernel_writer *kernel, int cpu, int sock)
 {
 	char buf[PATH_MAX];
 	ssize_t n;
@@ -644,7 +644,7 @@ retry:
  * This function read every (online) per-cpu trace data in a
  * round-robin fashion and save them to files.
  */
-int record_kernel_tracing(struct uftrace_kernel_writer *kernel)
+int record_kernel_tracing(struct motrace_kernel_writer *kernel)
 {
 	ssize_t bytes = 0;
 	ssize_t n;
@@ -672,7 +672,7 @@ int record_kernel_tracing(struct uftrace_kernel_writer *kernel)
  *
  * This function signals kernel to stop generating trace data.
  */
-int stop_kernel_tracing(struct uftrace_kernel_writer *kernel)
+int stop_kernel_tracing(struct motrace_kernel_writer *kernel)
 {
 	if (!kernel_tracing_enabled)
 		return 0;
@@ -687,7 +687,7 @@ int stop_kernel_tracing(struct uftrace_kernel_writer *kernel)
  * This function reads out remaining ftrace data and restores kernel
  * ftrace configuration.
  */
-int finish_kernel_tracing(struct uftrace_kernel_writer *kernel)
+int finish_kernel_tracing(struct motrace_kernel_writer *kernel)
 {
 	int i;
 
@@ -750,7 +750,7 @@ static int save_kernel_file(FILE *fp, const char *name)
 	return 0;
 }
 
-static int save_event_files(struct uftrace_kernel_writer *kernel, FILE *fp)
+static int save_event_files(struct motrace_kernel_writer *kernel, FILE *fp)
 {
 	int ret = -1;
 	char buf[PATH_MAX];
@@ -839,7 +839,7 @@ out:
 	return ret;
 }
 
-static int save_kernel_files(struct uftrace_kernel_writer *kernel)
+static int save_kernel_files(struct motrace_kernel_writer *kernel)
 {
 	char *path = NULL;
 	FILE *fp;
@@ -876,13 +876,13 @@ out:
 }
 
 /* provided for backward compatibility */
-static int load_current_kernel(struct uftrace_kernel_reader *kernel)
+static int load_current_kernel(struct motrace_kernel_reader *kernel)
 {
 	int fd;
 	size_t len;
 	char buf[PATH_MAX];
 	bool is_big_endian = !strcmp(get_endian_str(), "BE");
-	struct uftrace_kernel_parser *kp = &kernel->parser;
+	struct motrace_kernel_parser *kp = &kernel->parser;
 
 	kparser_set_info(kp, sizeof(long), getpagesize(), is_big_endian);
 
@@ -913,12 +913,12 @@ static int load_current_kernel(struct uftrace_kernel_reader *kernel)
 	return 0;
 }
 
-static int load_kernel_files(struct uftrace_kernel_reader *kernel)
+static int load_kernel_files(struct motrace_kernel_reader *kernel)
 {
 	char *path = NULL;
 	FILE *fp;
 	char buf[PATH_MAX];
-	struct uftrace_kernel_parser *kp = &kernel->parser;
+	struct motrace_kernel_parser *kp = &kernel->parser;
 	int page_size = 0, long_size = 0, file_endian = -1;
 	int ret = 0;
 
@@ -1023,7 +1023,7 @@ static int scandir_sort(const struct dirent **a, const struct dirent **b)
  * kernel ftrace data files.  It should be called in pair with
  * finish_kernel_data().
  */
-int setup_kernel_data(struct uftrace_kernel_reader *kernel)
+int setup_kernel_data(struct motrace_kernel_reader *kernel)
 {
 	int i;
 	char buf[PATH_MAX];
@@ -1084,7 +1084,7 @@ out:
  * This function destroys all data structures created by
  * setup_kernel_data().
  */
-int finish_kernel_data(struct uftrace_kernel_reader *kernel)
+int finish_kernel_data(struct motrace_kernel_reader *kernel)
 {
 	int i;
 
@@ -1107,7 +1107,7 @@ int finish_kernel_data(struct uftrace_kernel_reader *kernel)
 	return 0;
 }
 
-struct uftrace_kfunc {
+struct motrace_kfunc {
 	struct rb_node node;
 	uint64_t addr;
 };
@@ -1116,11 +1116,11 @@ static void add_kfunc_addr(struct rb_root *root, uint64_t addr)
 {
 	struct rb_node *parent = NULL;
 	struct rb_node **p = &root->rb_node;
-	struct uftrace_kfunc *iter, *kfunc;
+	struct motrace_kfunc *iter, *kfunc;
 
 	while (*p) {
 		parent = *p;
-		iter = rb_entry(parent, struct uftrace_kfunc, node);
+		iter = rb_entry(parent, struct motrace_kfunc, node);
 
 		if (iter->addr == addr)
 			return;
@@ -1141,10 +1141,10 @@ static void add_kfunc_addr(struct rb_root *root, uint64_t addr)
 static bool find_kfunc_addr(struct rb_root *root, uint64_t addr)
 {
 	struct rb_node *node = root->rb_node;
-	struct uftrace_kfunc *iter;
+	struct motrace_kfunc *iter;
 
 	while (node) {
-		iter = rb_entry(node, struct uftrace_kfunc, node);
+		iter = rb_entry(node, struct motrace_kfunc, node);
 
 		if (iter->addr == addr)
 			return true;
@@ -1166,7 +1166,7 @@ static bool find_kfunc_addr(struct rb_root *root, uint64_t addr)
  * @kernel->rstacks[@cpu].  It returns 0 if succeeded, 1 if there's
  * no more data or -1 on error.
  */
-int read_kernel_cpu_data(struct uftrace_kernel_reader *kernel, int cpu)
+int read_kernel_cpu_data(struct motrace_kernel_reader *kernel, int cpu)
 {
 	int ret;
 
@@ -1179,11 +1179,11 @@ int read_kernel_cpu_data(struct uftrace_kernel_reader *kernel, int cpu)
 	return 0;
 }
 
-static int read_kernel_cpu(struct uftrace_data *handle, int cpu)
+static int read_kernel_cpu(struct motrace_data *handle, int cpu)
 {
-	struct uftrace_kernel_reader *kernel = handle->kernel;
-	struct uftrace_rstack_list *rstack_list = &kernel->rstack_list[cpu];
-	struct uftrace_record *curr;
+	struct motrace_kernel_reader *kernel = handle->kernel;
+	struct motrace_rstack_list *rstack_list = &kernel->rstack_list[cpu];
+	struct motrace_record *curr;
 	int tid, prev_tid = -1;
 
 	if (rstack_list->count)
@@ -1194,9 +1194,9 @@ static int read_kernel_cpu(struct uftrace_data *handle, int cpu)
 	 * the given time filter (-t option).
 	 */
 	while (read_kernel_cpu_data(kernel, cpu) == 0) {
-		struct uftrace_session *sess = handle->sessions.first;
-		struct uftrace_task_reader *task;
-		struct uftrace_trigger tr = {};
+		struct motrace_session *sess = handle->sessions.first;
+		struct motrace_task_reader *task;
+		struct motrace_trigger tr = {};
 		uint64_t real_addr;
 		uint64_t time_filter = handle->time_filter;
 		uint64_t size_filter = handle->size_filter;
@@ -1228,11 +1228,11 @@ static int read_kernel_cpu(struct uftrace_data *handle, int cpu)
 		 * it might set TRACE trigger, which shows
 		 * function even if it's less than the time filter.
 		 */
-		uftrace_match_filter(real_addr, &sess->filters, &tr);
+		motrace_match_filter(real_addr, &sess->filters, &tr);
 
-		if (curr->type == UFTRACE_ENTRY) {
+		if (curr->type == MOTRACE_ENTRY) {
 			if (size_filter) {
-				struct uftrace_symbol *sym;
+				struct motrace_symbol *sym;
 
 				sym = find_symtabs(&sess->sym_info, curr->addr);
 				if (sym && sym->size >= size_filter)
@@ -1246,7 +1246,7 @@ static int read_kernel_cpu(struct uftrace_data *handle, int cpu)
 			add_kfunc_addr(&kfunc_tree, real_addr);
 
 			if (tr.flags & (TRIGGER_FL_TIME_FILTER | TRIGGER_FL_SIZE_FILTER)) {
-				struct uftrace_task_filter_stack *tfs;
+				struct motrace_task_filter_stack *tfs;
 
 				tfs = xmalloc(sizeof(*tfs));
 				tfs->next = task->filter.stack;
@@ -1264,8 +1264,8 @@ static int read_kernel_cpu(struct uftrace_data *handle, int cpu)
 			if (tid != prev_tid)
 				break;
 		}
-		else if (curr->type == UFTRACE_EXIT) {
-			struct uftrace_rstack_list_node *last;
+		else if (curr->type == MOTRACE_EXIT) {
+			struct motrace_rstack_list_node *last;
 			uint64_t delta;
 			int count;
 			bool filtered = false;
@@ -1274,7 +1274,7 @@ static int read_kernel_cpu(struct uftrace_data *handle, int cpu)
 				continue;
 
 			if (task->filter.stack) {
-				struct uftrace_task_filter_stack *tfs;
+				struct motrace_task_filter_stack *tfs;
 
 				tfs = task->filter.stack;
 				if (tfs->depth == curr->depth &&
@@ -1286,7 +1286,7 @@ static int read_kernel_cpu(struct uftrace_data *handle, int cpu)
 			}
 
 			if (size_filter) {
-				struct uftrace_symbol *sym;
+				struct motrace_symbol *sym;
 				sym = find_symtabs(&sess->sym_info, curr->addr);
 
 				if (sym && sym->size < size_filter)
@@ -1306,7 +1306,7 @@ static int read_kernel_cpu(struct uftrace_data *handle, int cpu)
 			count = 1;
 
 			/* skip EVENT records, if any*/
-			while (last->rstack.type == UFTRACE_EVENT) {
+			while (last->rstack.type == MOTRACE_EVENT) {
 				last = list_prev_entry(last, list);
 				count++;
 			}
@@ -1333,8 +1333,8 @@ static int read_kernel_cpu(struct uftrace_data *handle, int cpu)
 				break;
 			}
 		}
-		else if (curr->type == UFTRACE_EVENT) {
-			struct uftrace_fstack_args arg = {
+		else if (curr->type == MOTRACE_EVENT) {
+			struct motrace_fstack_args arg = {
 				.data = kparser_trace_buffer(&kernel->parser),
 				.len = kparser_trace_buflen(&kernel->parser) + 1,
 			};
@@ -1372,7 +1372,7 @@ out:
 
 /**
  * read_kernel_event - read current kernel event of specific cpu
- * @handle - uftrace file handle
+ * @handle - motrace file handle
  * @cpu    - cpu number
  * @psize  - pointer to size
  *
@@ -1381,9 +1381,9 @@ out:
  * pointer to event data if succeeded, NULL if current record is not a
  * tracepoint.
  */
-void *read_kernel_event(struct uftrace_kernel_reader *kernel, int cpu, int *psize)
+void *read_kernel_event(struct motrace_kernel_reader *kernel, int cpu, int *psize)
 {
-	struct uftrace_record *rstack = &kernel->rstacks[cpu];
+	struct motrace_record *rstack = &kernel->rstacks[cpu];
 
 	if (!rstack->more)
 		return NULL;
@@ -1407,14 +1407,14 @@ void *read_kernel_event(struct uftrace_kernel_reader *kernel, int cpu, int *psiz
  * This function returns the cpu number (> 0) if it reads a rstack,
  * -1 if it's done.
  */
-int read_kernel_stack(struct uftrace_data *handle, struct uftrace_task_reader **taskp)
+int read_kernel_stack(struct motrace_data *handle, struct motrace_task_reader **taskp)
 {
 	int i;
 	int first_cpu = -1;
 	int first_tid = -1;
 	uint64_t first_timestamp = 0;
-	struct uftrace_kernel_reader *kernel = handle->kernel;
-	struct uftrace_record *first_rstack;
+	struct motrace_kernel_reader *kernel = handle->kernel;
+	struct motrace_record *first_rstack;
 
 retry:
 	first_rstack = NULL;
@@ -1448,7 +1448,7 @@ retry:
 		kernel->rstack_valid[first_cpu] = false;
 
 		if (first_rstack->more) {
-			struct uftrace_rstack_list_node *node;
+			struct motrace_rstack_list_node *node;
 
 			node = list_first_entry(&kernel->rstack_list[first_cpu].read, typeof(*node),
 						list);
@@ -1466,10 +1466,10 @@ retry:
 	return first_cpu;
 }
 
-struct uftrace_record *get_kernel_record(struct uftrace_kernel_reader *kernel,
-					 struct uftrace_task_reader *task, int cpu)
+struct motrace_record *get_kernel_record(struct motrace_kernel_reader *kernel,
+					 struct motrace_task_reader *task, int cpu)
 {
-	static struct uftrace_record lost_record;
+	static struct motrace_record lost_record;
 	int missed_events = kparser_missed_events(&kernel->parser, cpu);
 
 	if (!missed_events)
@@ -1477,7 +1477,7 @@ struct uftrace_record *get_kernel_record(struct uftrace_kernel_reader *kernel,
 
 	/* convert to ftrace_rstack */
 	lost_record.time = 0;
-	lost_record.type = UFTRACE_LOST;
+	lost_record.type = MOTRACE_LOST;
 	lost_record.addr = missed_events;
 	lost_record.depth = task->kstack.depth;
 	lost_record.magic = RECORD_MAGIC;
@@ -1504,8 +1504,8 @@ struct uftrace_record *get_kernel_record(struct uftrace_kernel_reader *kernel,
 #define FUNCGRAPH_EXIT 10
 #define TEST_EXAMPLE 100
 
-static struct uftrace_data test_handle;
-static struct uftrace_session test_sess;
+static struct motrace_data test_handle;
+static struct motrace_session test_sess;
 static void kernel_test_finish_file(void);
 static void kernel_test_finish_handle(void);
 
@@ -1666,7 +1666,7 @@ static struct test_example test_event[NUM_CPU][NUM_EVENT] = {
 	}
 };
 
-/* NOTE: we used struct funcgraph_exit even for UFTRACE_ENTRY */
+/* NOTE: we used struct funcgraph_exit even for MOTRACE_ENTRY */
 static int record_size(struct funcgraph_exit *rec)
 {
 	return rec->common_type == FUNCGRAPH_ENTRY ? sizeof(struct funcgraph_entry) :
@@ -1675,7 +1675,7 @@ static int record_size(struct funcgraph_exit *rec)
 
 static int record_type(struct funcgraph_exit *rec)
 {
-	return rec->common_type == FUNCGRAPH_ENTRY ? UFTRACE_ENTRY : UFTRACE_EXIT;
+	return rec->common_type == FUNCGRAPH_ENTRY ? MOTRACE_ENTRY : MOTRACE_EXIT;
 }
 
 static int record_depth(struct funcgraph_exit *rec)
@@ -1692,7 +1692,7 @@ static int record_depth(struct funcgraph_exit *rec)
 	if (fwrite_all(bf, sz, fp) < 0)                                                            \
 	pr_dbg("write failed: %s\n", #bf)
 
-static int kernel_test_setup_file(struct uftrace_kernel_reader *kernel, bool event)
+static int kernel_test_setup_file(struct motrace_kernel_reader *kernel, bool event)
 {
 	int cpu, i;
 	FILE *fp;
@@ -1772,8 +1772,8 @@ static int kernel_test_setup_file(struct uftrace_kernel_reader *kernel, bool eve
 #undef cwrite
 #undef cwrite2
 
-static int kernel_test_setup_handle(struct uftrace_kernel_reader *kernel,
-				    struct uftrace_data *handle)
+static int kernel_test_setup_handle(struct motrace_kernel_reader *kernel,
+				    struct motrace_data *handle)
 {
 	int i;
 
@@ -1800,7 +1800,7 @@ static void kernel_test_finish_file(void)
 {
 	int cpu;
 	char *filename;
-	struct uftrace_kernel_reader *kernel = test_handle.kernel;
+	struct motrace_kernel_reader *kernel = test_handle.kernel;
 
 	if (kernel == NULL)
 		return;
@@ -1830,7 +1830,7 @@ static void kernel_test_finish_file(void)
 
 static void kernel_test_finish_handle(void)
 {
-	struct uftrace_data *handle = &test_handle;
+	struct motrace_data *handle = &test_handle;
 
 	free(handle->tasks);
 	handle->tasks = NULL;
@@ -1840,9 +1840,9 @@ TEST_CASE(kernel_read)
 {
 	int cpu, i;
 	int timestamp[NUM_CPU] = {};
-	struct uftrace_data *handle = &test_handle;
-	struct uftrace_kernel_reader *kernel = xzalloc(sizeof(*kernel));
-	struct uftrace_task_reader *task;
+	struct motrace_data *handle = &test_handle;
+	struct motrace_kernel_reader *kernel = xzalloc(sizeof(*kernel));
+	struct motrace_task_reader *task;
 
 	TEST_EQ(kernel_test_setup_file(kernel, false), 0);
 	TEST_EQ(kernel_test_setup_handle(kernel, handle), 0);
@@ -1850,7 +1850,7 @@ TEST_CASE(kernel_read)
 	i = 0;
 	while ((cpu = read_kernel_stack(handle, &task)) != -1) {
 		struct funcgraph_exit *rec = &test_record[cpu][i / 2];
-		struct uftrace_record *rstack = &task->kstack;
+		struct motrace_record *rstack = &task->kstack;
 
 		timestamp[cpu] += test_len_ts[cpu][i / 2].ts;
 
@@ -1876,14 +1876,14 @@ TEST_CASE(kernel_cpu_read)
 {
 	int cpu, i;
 	int timestamp[NUM_CPU] = {};
-	struct uftrace_kernel_reader *kernel = xzalloc(sizeof(*kernel));
+	struct motrace_kernel_reader *kernel = xzalloc(sizeof(*kernel));
 
 	TEST_EQ(kernel_test_setup_file(kernel, false), 0);
 
 	for (cpu = 0; cpu < NUM_CPU; cpu++) {
 		for (i = 0; i < NUM_RECORD; i++) {
 			struct funcgraph_exit *rec = &test_record[cpu][i];
-			struct uftrace_record *rstack = &kernel->parser.rec;
+			struct motrace_record *rstack = &kernel->parser.rec;
 
 			TEST_EQ(read_kernel_cpu_data(kernel, cpu), 0);
 
@@ -1906,7 +1906,7 @@ TEST_CASE(kernel_event_read)
 {
 	int cpu, i;
 	int timestamp[NUM_CPU] = {};
-	struct uftrace_kernel_reader *kernel = xzalloc(sizeof(*kernel));
+	struct motrace_kernel_reader *kernel = xzalloc(sizeof(*kernel));
 
 	pr_dbg("checking custom event format parsing\n");
 	TEST_EQ(kernel_test_setup_file(kernel, true), 0);
@@ -1914,7 +1914,7 @@ TEST_CASE(kernel_event_read)
 	for (cpu = 0; cpu < NUM_CPU; cpu++) {
 		for (i = 0; i < NUM_EVENT; i++) {
 			struct test_example *rec = &test_event[cpu][i];
-			struct uftrace_record *rstack = &kernel->parser.rec;
+			struct motrace_record *rstack = &kernel->parser.rec;
 			char *data;
 			int size;
 			int foo, bar;
@@ -1925,7 +1925,7 @@ TEST_CASE(kernel_event_read)
 			timestamp[cpu] += test_event_len_ts[cpu][i].ts;
 
 			pr_dbg("[%d] read event record: type=%d, data=%s\n", i, rstack->type, data);
-			TEST_EQ((int)rstack->type, UFTRACE_EVENT);
+			TEST_EQ((int)rstack->type, MOTRACE_EVENT);
 			TEST_EQ((int)rstack->time, timestamp[cpu]);
 			TEST_EQ((int)rstack->addr, TEST_EXAMPLE);
 			TEST_EQ((int)rstack->depth, 0);

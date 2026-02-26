@@ -12,7 +12,7 @@
 #include "utils/symbol-libelf.h"
 #include "utils/utils.h"
 
-int elf_init(const char *filename, struct uftrace_elf_data *elf)
+int elf_init(const char *filename, struct motrace_elf_data *elf)
 {
 	/* it will be set only in elf_retry() */
 	elf->dwfl = NULL;
@@ -48,7 +48,7 @@ err:
 	return -1;
 }
 
-void elf_finish(struct uftrace_elf_data *elf)
+void elf_finish(struct motrace_elf_data *elf)
 {
 	if (elf->fd < 0)
 		return;
@@ -69,7 +69,7 @@ void elf_finish(struct uftrace_elf_data *elf)
 }
 
 /* return 1 if it wants to retry with libdwfl, 0 otherwise */
-int elf_retry(const char *filename, struct uftrace_elf_data *elf)
+int elf_retry(const char *filename, struct motrace_elf_data *elf)
 {
 #ifdef HAVE_LIBDW
 	Dwfl *dwfl;
@@ -116,12 +116,12 @@ out:
 	return 0;
 }
 
-void elf_get_secdata(struct uftrace_elf_data *elf, struct uftrace_elf_iter *iter)
+void elf_get_secdata(struct motrace_elf_data *elf, struct motrace_elf_iter *iter)
 {
 	iter->data = elf_getdata((iter)->scn, NULL);
 }
 
-void elf_read_secdata(struct uftrace_elf_data *elf, struct uftrace_elf_iter *iter, unsigned offset,
+void elf_read_secdata(struct motrace_elf_data *elf, struct motrace_elf_iter *iter, unsigned offset,
 		      void *buf, size_t len)
 {
 	memcpy(buf, iter->data->d_buf + offset, len);

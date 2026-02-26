@@ -16,7 +16,6 @@
 #include "libmcount/mcount.h"
 #include "mcount-arch.h"
 #include "utils/filter.h"
-#include "utils/script.h"
 #include "utils/symbol.h"
 #include "utils/utils.h"
 
@@ -56,7 +55,7 @@ static void resolve_pltgot(struct plthook_data *pd, int idx)
 {
 	if (pd->resolved_addr[idx] == 0) {
 		unsigned long addr;
-		struct uftrace_symbol *sym;
+		struct motrace_symbol *sym;
 
 		sym = &pd->dsymtab.sym[idx];
 		addr = (unsigned long)dlsym(RTLD_DEFAULT, sym->name);
@@ -80,7 +79,7 @@ static void resolve_pltgot(struct plthook_data *pd, int idx)
 }
 
 /* use weak reference for non-defined (arch-dependent) symbols */
-#define ALIAS_DECL(_sym) extern __weak void (*uftrace_##_sym)(void);
+#define ALIAS_DECL(_sym) extern __weak void (*motrace_##_sym)(void);
 
 ALIAS_DECL(mcount);
 ALIAS_DECL(_mcount);
@@ -91,7 +90,7 @@ ALIAS_DECL(__cyg_profile_func_exit);
 
 #define SKIP_SYM(func)                                                                             \
 	{                                                                                          \
-#func, &uftrace_##func                                                             \
+#func, &motrace_##func                                                             \
 	}
 
 const struct plthook_skip_symbol plt_skip_syms[] = {
@@ -125,19 +124,19 @@ size_t noplt_skip_nr = ARRAY_SIZE(noplt_skip_syms);
 #undef ALIAS_DECL
 
 /*
- * The `mcount` (and its friends) are part of uftrace itself,
+ * The `mcount` (and its friends) are part of motrace itself,
  * so no need to use PLT hook for them.
  */
 static void restore_plt_functions(struct plthook_data *pd)
 {
 	unsigned i, k;
-	struct uftrace_symtab *dsymtab = &pd->dsymtab;
+	struct motrace_symtab *dsymtab = &pd->dsymtab;
 
 	for (i = 0; i < dsymtab->nr_sym; i++) {
 		/*
 		 * Typically GOT[0], GOT[1], and GOT[2] are reserved.
 		 * GOT[2] initially points to the runtime resolver, but updated
-		 * to plt_hooker for library tracing by uftrace.
+		 * to plt_hooker for library tracing by motrace.
 		 * The addresses from GOT[3] are supposed to point the resolved
 		 * addresses for each library function.
 		 */
@@ -145,7 +144,7 @@ static void restore_plt_functions(struct plthook_data *pd)
 		bool skipped = false;
 		unsigned long plthook_addr;
 		unsigned long resolved_addr;
-		struct uftrace_symbol *sym = dsymtab->sym_names[i];
+		struct motrace_symbol *sym = dsymtab->sym_names[i];
 
 		for (k = 0; k < plt_skip_nr; k++) {
 			const struct plthook_skip_symbol *skip_sym;
@@ -192,25 +191,25 @@ static void restore_plt_functions(struct plthook_data *pd)
 extern void __weak plt_hooker(void);
 extern unsigned long plthook_return(void);
 
-__weak struct plthook_data *mcount_arch_hook_no_plt(struct uftrace_elf_data *elf,
+__weak struct plthook_data *mcount_arch_hook_no_plt(struct motrace_elf_data *elf,
 						    const char *modname, unsigned long offset)
 {
 	return NULL;
 }
 
-__weak void mcount_arch_plthook_setup(struct plthook_data *pd, struct uftrace_elf_data *elf)
+__weak void mcount_arch_plthook_setup(struct plthook_data *pd, struct motrace_elf_data *elf)
 {
 	pd->arch = NULL;
 }
 
-static int find_got(struct uftrace_elf_data *elf, struct uftrace_elf_iter *iter,
+static int find_got(struct motrace_elf_data *elf, struct motrace_elf_iter *iter,
 		    const char *modname, unsigned long offset)
 {
 	bool plt_found = false;
 	unsigned long pltgot_addr = 0;
 	unsigned long plt_addr = 0;
 	unsigned long jmprel_addr = 0;
-	struct uftrace_elf_iter sec_iter;
+	struct motrace_elf_iter sec_iter;
 	size_t jmprel_nr = 0;
 	size_t jmprel_ent_size = 0;
 	struct plthook_data *pd;
@@ -324,7 +323,7 @@ static int find_got(struct uftrace_elf_data *elf, struct uftrace_elf_iter *iter,
 	pd->base_addr = offset;
 	pd->plt_addr = plt_addr;
 
-	pr_dbg2("\"%s\" is loaded at %#lx\n", uftrace_basename(pd->mod_name), pd->base_addr);
+	pr_dbg2("\"%s\" is loaded at %#lx\n", motrace_basename(pd->mod_name), pd->base_addr);
 
 	memset(&pd->dsymtab, 0, sizeof(pd->dsymtab));
 	/* do not demangle symbol names since it might call dlsym() */
@@ -371,8 +370,8 @@ static int hook_pltgot(const char *modname, unsigned long offset)
 	unsigned long relro_start = 0;
 	unsigned long relro_size = 0;
 	unsigned long page_size;
-	struct uftrace_elf_data elf;
-	struct uftrace_elf_iter iter;
+	struct motrace_elf_data elf;
+	struct motrace_elf_iter iter;
 	bool found_dynamic = false;
 
 	pr_dbg2("opening executable image: %s\n", modname);
@@ -545,12 +544,12 @@ static int setup_mod_plthook_data(struct dl_phdr_info *info, size_t sz, void *ar
 	const char *exename = info->dlpi_name;
 	unsigned long offset = info->dlpi_addr;
 	static const char *const skip_libs[] = {
-		/* uftrace internal libraries */
+		/* motrace internal libraries */
 		"libmcount.so",
 		"libmcount-fast.so",
 		"libmcount-single.so",
 		"libmcount-fast-single.so",
-		"uftrace_python.so",
+		"motrace_python.so",
 		/* system base libraries */
 		"libc.so.6",
 		"libc-2.*.so",
@@ -582,7 +581,7 @@ static int setup_mod_plthook_data(struct dl_phdr_info *info, size_t sz, void *ar
 	}
 
 	for (k = 0; k < ARRAY_SIZE(skip_libs); k++) {
-		if (!fnmatch(skip_libs[k], uftrace_basename(exename), 0))
+		if (!fnmatch(skip_libs[k], motrace_basename(exename), 0))
 			return 0;
 	}
 
@@ -705,7 +704,7 @@ static void prepare_vfork(struct mcount_thread_data *mtdp, struct mcount_ret_sta
 /* this function will be called in child */
 static void setup_vfork(struct mcount_thread_data *mtdp)
 {
-	struct uftrace_msg_task tmsg = {
+	struct motrace_msg_task tmsg = {
 		.pid = getppid(),
 		.tid = getpid(),
 		.time = mcount_gettime(),
@@ -720,8 +719,8 @@ static void setup_vfork(struct mcount_thread_data *mtdp)
 	mcount_memset4(&mtdp->shmem, 0, sizeof(mtdp->shmem));
 	prepare_shmem_buffer(mtdp);
 
-	uftrace_send_message(UFTRACE_MSG_FORK_START, &tmsg, sizeof(tmsg));
-	uftrace_send_message(UFTRACE_MSG_FORK_END, &tmsg, sizeof(tmsg));
+	motrace_send_message(MOTRACE_MSG_FORK_START, &tmsg, sizeof(tmsg));
+	motrace_send_message(MOTRACE_MSG_FORK_END, &tmsg, sizeof(tmsg));
 
 	update_kernel_tid(tmsg.tid);
 }
@@ -760,19 +759,19 @@ static struct mcount_ret_stack *restore_vfork(struct mcount_thread_data *mtdp,
  * The GOT entry is updated by the runtime resolver to the resolved address of
  * the target library function for later reference.
  *
- * However, uftrace gets this address to update it back to the initial value.
- * Even if the GOT entry is resolved by runtime resolver, uftrace restores the
+ * However, motrace gets this address to update it back to the initial value.
+ * Even if the GOT entry is resolved by runtime resolver, motrace restores the
  * address back to the initial value to watch library function calls.
  *
  * Before doing this work, GOT[2] is updated from the address of runtime
- * resolver(_dl_runtime_resolve) to uftrace hooking routine(plt_hooker).
+ * resolver(_dl_runtime_resolve) to motrace hooking routine(plt_hooker).
  *
  * This address depends on the PLT structure of each architecture so this
  * function is implemented differently for each architecture.
  */
 __weak unsigned long mcount_arch_plthook_addr(struct plthook_data *pd, int idx)
 {
-	struct uftrace_symbol *sym;
+	struct motrace_symbol *sym;
 
 	sym = &pd->dsymtab.sym[idx];
 	return sym->addr + ARCH_PLTHOOK_ADDR_OFFSET;
@@ -810,7 +809,7 @@ __weak unsigned long mcount_arch_child_idx(unsigned long child_idx)
 static unsigned long __plthook_entry(unsigned long *ret_addr, unsigned long child_idx,
 				     unsigned long module_id, struct mcount_regs *regs)
 {
-	struct uftrace_symbol *sym;
+	struct motrace_symbol *sym;
 	struct mcount_thread_data *mtdp = NULL;
 	struct mcount_ret_stack *rstack;
 	bool skip = false;
@@ -820,7 +819,7 @@ static unsigned long __plthook_entry(unsigned long *ret_addr, unsigned long chil
 	struct plthook_special_func *func;
 	unsigned long special_flag = 0;
 	unsigned long real_addr = 0;
-	struct uftrace_trigger tr;
+	struct motrace_trigger tr;
 
 	mcount_memset4(&tr, 0, sizeof(tr));
 
@@ -876,7 +875,7 @@ static unsigned long __plthook_entry(unsigned long *ret_addr, unsigned long chil
 		return 0;
 	}
 
-	filtered = mcount_entry_filter_check(mtdp, sym->addr, &tr);
+	filtered = mcount_entry_filter_check(mtdp, sym->addr, &tr, regs);
 	if (filtered != FILTER_IN) {
 		/*
 		 * Skip recording but still hook the return address,
@@ -903,6 +902,8 @@ static unsigned long __plthook_entry(unsigned long *ret_addr, unsigned long chil
 	rstack->parent_loc = ret_addr;
 	rstack->parent_ip = *ret_addr;
 	rstack->child_ip = sym->addr;
+	rstack->start_cpu_time = 0;
+	rstack->cpu_time = 0;
 	rstack->start_time = skip ? 0 : mcount_gettime();
 	rstack->end_time = 0;
 	rstack->flags = skip ? MCOUNT_FL_NORECORD : 0;

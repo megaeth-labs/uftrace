@@ -9,7 +9,7 @@
 #include <unistd.h>
 
 #include "libmcount/mcount.h"
-#include "uftrace.h"
+#include "motrace.h"
 #include "utils/event.h"
 #include "utils/filter.h"
 #include "utils/fstack.h"
@@ -33,15 +33,15 @@
  *
  * It returns 0 for success, -1 for error.
  */
-int read_task_file(struct uftrace_session_link *sess, char *dirname, bool needs_symtab,
+int read_task_file(struct motrace_session_link *sess, char *dirname, bool needs_symtab,
 		   bool sym_rel_addr, bool needs_srcline)
 {
 	int fd;
 	char pad[8];
 	char buf[1024];
-	struct uftrace_msg msg;
-	struct uftrace_msg_task tmsg;
-	struct uftrace_msg_sess smsg;
+	struct motrace_msg msg;
+	struct motrace_msg_task tmsg;
+	struct motrace_msg_sess smsg;
 	int ret = -1;
 
 	snprintf(buf, sizeof(buf), "%s/task", dirname);
@@ -51,11 +51,11 @@ int read_task_file(struct uftrace_session_link *sess, char *dirname, bool needs_
 
 	pr_dbg("reading task file\n");
 	while (read_all(fd, &msg, sizeof(msg)) == 0) {
-		if (msg.magic != UFTRACE_MSG_MAGIC)
+		if (msg.magic != MOTRACE_MSG_MAGIC)
 			goto out;
 
 		switch (msg.type) {
-		case UFTRACE_MSG_SESSION:
+		case MOTRACE_MSG_SESSION:
 			if (read_all(fd, &smsg, sizeof(smsg)) < 0)
 				goto out;
 			if (read_all(fd, buf, smsg.namelen) < 0)
@@ -67,14 +67,14 @@ int read_task_file(struct uftrace_session_link *sess, char *dirname, bool needs_
 				       needs_symtab, needs_srcline);
 			break;
 
-		case UFTRACE_MSG_TASK_START:
+		case MOTRACE_MSG_TASK_START:
 			if (read_all(fd, &tmsg, sizeof(tmsg)) < 0)
 				goto out;
 
 			create_task(sess, &tmsg, false);
 			break;
 
-		case UFTRACE_MSG_FORK_END:
+		case MOTRACE_MSG_FORK_END:
 			if (read_all(fd, &tmsg, sizeof(tmsg)) < 0)
 				goto out;
 
@@ -106,7 +106,7 @@ out:
  *
  * It returns 0 for success, -1 for error.
  */
-int read_task_txt_file(struct uftrace_session_link *sess, char *dirname, char *symdir,
+int read_task_txt_file(struct motrace_session_link *sess, char *dirname, char *symdir,
 		       bool needs_symtab, bool sym_rel_addr, bool needs_srcline)
 {
 	FILE *fp;
@@ -114,9 +114,9 @@ int read_task_txt_file(struct uftrace_session_link *sess, char *dirname, char *s
 	char *line = NULL;
 	size_t sz = 0;
 	unsigned long sec, nsec;
-	struct uftrace_msg_task tmsg;
-	struct uftrace_msg_sess smsg;
-	struct uftrace_msg_dlopen dlop;
+	struct motrace_msg_task tmsg;
+	struct motrace_msg_sess smsg;
+	struct motrace_msg_dlopen dlop;
 	char *exename, *pos;
 	int ret = -1;
 	int num;
@@ -173,7 +173,7 @@ int read_task_txt_file(struct uftrace_session_link *sess, char *dirname, char *s
 				       needs_symtab, needs_srcline);
 		}
 		else if (!strncmp(line, "DLOP", 4)) {
-			struct uftrace_session *s;
+			struct motrace_session *s;
 
 			if (!needs_symtab)
 				continue;
@@ -222,7 +222,7 @@ static void snprint_timestamp(char *buf, size_t sz, uint64_t timestamp)
 		 timestamp / NSEC_PER_SEC, timestamp % NSEC_PER_SEC);
 }
 
-void write_task_info(const char *dirname, struct uftrace_msg_task *tmsg)
+void write_task_info(const char *dirname, struct motrace_msg_task *tmsg)
 {
 	FILE *fp;
 	char *fname = NULL;
@@ -241,7 +241,7 @@ void write_task_info(const char *dirname, struct uftrace_msg_task *tmsg)
 	free(fname);
 }
 
-void write_fork_info(const char *dirname, struct uftrace_msg_task *tmsg)
+void write_fork_info(const char *dirname, struct motrace_msg_task *tmsg)
 {
 	FILE *fp;
 	char *fname = NULL;
@@ -260,7 +260,7 @@ void write_fork_info(const char *dirname, struct uftrace_msg_task *tmsg)
 	free(fname);
 }
 
-void write_session_info(const char *dirname, struct uftrace_msg_sess *smsg, const char *exename)
+void write_session_info(const char *dirname, struct motrace_msg_sess *smsg, const char *exename)
 {
 	FILE *fp;
 	char *fname = NULL;
@@ -280,7 +280,7 @@ void write_session_info(const char *dirname, struct uftrace_msg_sess *smsg, cons
 	free(fname);
 }
 
-void write_dlopen_info(const char *dirname, struct uftrace_msg_dlopen *dmsg, const char *libname)
+void write_dlopen_info(const char *dirname, struct motrace_msg_dlopen *dmsg, const char *libname)
 {
 	FILE *fp;
 	char *fname = NULL;
@@ -300,10 +300,10 @@ void write_dlopen_info(const char *dirname, struct uftrace_msg_dlopen *dmsg, con
 	free(fname);
 }
 
-static void check_data_order(struct uftrace_data *handle)
+static void check_data_order(struct motrace_data *handle)
 {
 	union {
-		struct uftrace_record s;
+		struct motrace_record s;
 		uint64_t d[2];
 	} data;
 
@@ -319,7 +319,7 @@ static void check_data_order(struct uftrace_data *handle)
 		pr_dbg("bitfield order is different!\n");
 }
 
-static bool check_data_file(struct uftrace_data *handle, const char *pattern)
+static bool check_data_file(struct motrace_data *handle, const char *pattern)
 {
 	glob_t g;
 	size_t i;
@@ -343,12 +343,12 @@ static bool check_data_file(struct uftrace_data *handle, const char *pattern)
 	return found;
 }
 
-bool data_is_lp64(struct uftrace_data *handle)
+bool data_is_lp64(struct motrace_data *handle)
 {
 	return handle->hdr.elf_class == ELFCLASS64;
 }
 
-int open_info_file(struct uftrace_opts *opts, struct uftrace_data *handle)
+int open_info_file(struct motrace_opts *opts, struct motrace_data *handle)
 {
 	FILE *fp;
 	char buf[PATH_MAX];
@@ -369,7 +369,7 @@ int open_info_file(struct uftrace_opts *opts, struct uftrace_data *handle)
 		saved_errno = EINVAL;
 
 	/* if default dirname is failed */
-	if (!strcmp(opts->dirname, UFTRACE_DIR_NAME)) {
+	if (!strcmp(opts->dirname, MOTRACE_DIR_NAME)) {
 		/* try again inside the current directory */
 		fp = fopen("./info", "rb");
 		if (fp != NULL) {
@@ -378,10 +378,10 @@ int open_info_file(struct uftrace_opts *opts, struct uftrace_data *handle)
 		}
 
 		/* retry with old default dirname */
-		snprintf(buf, sizeof(buf), "%s/info", UFTRACE_DIR_OLD_NAME);
+		snprintf(buf, sizeof(buf), "%s/info", MOTRACE_DIR_OLD_NAME);
 		fp = fopen(buf, "rb");
 		if (fp != NULL) {
-			opts->dirname = UFTRACE_DIR_OLD_NAME;
+			opts->dirname = MOTRACE_DIR_OLD_NAME;
 			goto ok;
 		}
 
@@ -411,7 +411,7 @@ ok:
 	if (fread(&handle->hdr, sizeof(handle->hdr), 1, fp) != 1)
 		pr_err("cannot read header data");
 
-	if (memcmp(handle->hdr.magic, UFTRACE_MAGIC_STR, UFTRACE_MAGIC_LEN))
+	if (memcmp(handle->hdr.magic, MOTRACE_MAGIC_STR, MOTRACE_MAGIC_LEN))
 		pr_err_ns("invalid magic string found!\n");
 
 	check_data_order(handle);
@@ -423,12 +423,12 @@ ok:
 		handle->hdr.max_stack = bswap_16(handle->hdr.max_stack);
 	}
 
-	if (handle->hdr.version < UFTRACE_FILE_VERSION_MIN ||
-	    handle->hdr.version > UFTRACE_FILE_VERSION)
+	if (handle->hdr.version < MOTRACE_FILE_VERSION_MIN ||
+	    handle->hdr.version > MOTRACE_FILE_VERSION)
 		pr_err_ns("unsupported file version: %u\n", handle->hdr.version);
 
-	if (read_uftrace_info(handle->hdr.info_mask, handle) < 0)
-		pr_err_ns("cannot read uftrace header info!\n");
+	if (read_motrace_info(handle->hdr.info_mask, handle) < 0)
+		pr_err_ns("cannot read motrace header info!\n");
 
 	if (opts->exename == NULL)
 		opts->exename = handle->info.exename;
@@ -437,7 +437,7 @@ ok:
 	return 0;
 }
 
-int open_data_file(struct uftrace_opts *opts, struct uftrace_data *handle)
+int open_data_file(struct motrace_opts *opts, struct motrace_data *handle)
 {
 	int ret;
 	char buf[PATH_MAX];
@@ -456,7 +456,7 @@ int open_data_file(struct uftrace_opts *opts, struct uftrace_data *handle)
 
 	if (handle->hdr.feat_mask & TASK_SESSION) {
 		bool sym_rel = false;
-		struct uftrace_session_link *sessions = &handle->sessions;
+		struct motrace_session_link *sessions = &handle->sessions;
 		int i;
 
 		if (handle->hdr.feat_mask & SYM_REL_ADDR)
@@ -494,7 +494,7 @@ int open_data_file(struct uftrace_opts *opts, struct uftrace_data *handle)
 	}
 
 	if (handle->hdr.info_mask & ARG_SPEC) {
-		struct uftrace_filter_setting setting = {
+		struct motrace_filter_setting setting = {
 			.ptype = handle->info.patt_type,
 			.allow_kernel = true,
 			.auto_args = false,
@@ -529,7 +529,7 @@ int open_data_file(struct uftrace_opts *opts, struct uftrace_data *handle)
 		handle->hdr.max_stack = MCOUNT_RSTACK_MAX;
 
 	if (handle->hdr.feat_mask & KERNEL) {
-		struct uftrace_kernel_reader *kernel;
+		struct motrace_kernel_reader *kernel;
 
 		kernel = xzalloc(sizeof(*kernel));
 
@@ -581,7 +581,7 @@ out:
 	return ret;
 }
 
-void __close_data_file(struct uftrace_opts *opts, struct uftrace_data *handle, bool unload_modules)
+void __close_data_file(struct motrace_opts *opts, struct motrace_data *handle, bool unload_modules)
 {
 	if (opts->exename == handle->info.exename)
 		opts->exename = NULL;
@@ -607,7 +607,7 @@ void __close_data_file(struct uftrace_opts *opts, struct uftrace_data *handle, b
 	if (handle->hdr.feat_mask & AUTO_ARGS)
 		finish_auto_args();
 
-	clear_uftrace_info(&handle->info);
+	clear_motrace_info(&handle->info);
 	reset_task_handle(handle);
 }
 
@@ -616,100 +616,100 @@ void __close_data_file(struct uftrace_opts *opts, struct uftrace_data *handle, b
 #define TEST_EXIT_STATUS 37
 #define TEST_INFO_MASK (EXE_NAME | EXIT_STATUS | TASKINFO)
 
-static int create_test_data(struct uftrace_opts *opts)
+static int create_test_data(struct motrace_opts *opts)
 {
-	struct uftrace_msg_sess sess_msg = {
+	struct motrace_msg_sess sess_msg = {
 		.task = { .time = 100, .pid = 10 },
 		.sid = TEST_SESSION_ID,
 	};
-	struct uftrace_msg_task task_msg = {
+	struct motrace_msg_task task_msg = {
 		.time = 200,
 		.pid = 10,
 		.tid = 10,
 	};
-	struct uftrace_msg_task fork_msg = {
+	struct motrace_msg_task fork_msg = {
 		.time = 300,
 		.pid = 10,
 		.tid = 20,
 	};
-	struct uftrace_msg_dlopen dlopen_msg = {
+	struct motrace_msg_dlopen dlopen_msg = {
 		.task = { .time = 400, .tid = 20 },
 		.sid = TEST_SESSION_ID,
 		.base_addr = 0x123000,
 	};
-	struct uftrace_record parent_funcs[] = {
+	struct motrace_record parent_funcs[] = {
 		/* ignore symbols for now */
 		{
 			.time = 201,
-			.type = UFTRACE_ENTRY,
+			.type = MOTRACE_ENTRY,
 			.magic = RECORD_MAGIC,
 			.depth = 0,
 		},
 		{
 			.time = 202,
-			.type = UFTRACE_ENTRY,
+			.type = MOTRACE_ENTRY,
 			.magic = RECORD_MAGIC,
 			.depth = 1,
 		},
 		{
 			.time = 203,
-			.type = UFTRACE_ENTRY,
+			.type = MOTRACE_ENTRY,
 			.magic = RECORD_MAGIC,
 			.depth = 2,
 		},
 		{
 			.time = 204,
-			.type = UFTRACE_ENTRY,
+			.type = MOTRACE_ENTRY,
 			.magic = RECORD_MAGIC,
 			.depth = 3,
 		},
 		{
 			.time = 205,
-			.type = UFTRACE_EXIT,
+			.type = MOTRACE_EXIT,
 			.magic = RECORD_MAGIC,
 			.depth = 3,
 		},
 		{
 			.time = 206,
-			.type = UFTRACE_EXIT,
+			.type = MOTRACE_EXIT,
 			.magic = RECORD_MAGIC,
 			.depth = 2,
 		},
 		{
 			.time = 207,
-			.type = UFTRACE_EXIT,
+			.type = MOTRACE_EXIT,
 			.magic = RECORD_MAGIC,
 			.depth = 1,
 		},
 		{
 			.time = 208,
-			.type = UFTRACE_EXIT,
+			.type = MOTRACE_EXIT,
 			.magic = RECORD_MAGIC,
 			.depth = 0,
 		},
 	};
-	struct uftrace_record child_funcs[] = {
+	struct motrace_record child_funcs[] = {
 		{
 			.time = 301,
-			.type = UFTRACE_ENTRY,
+			.type = MOTRACE_ENTRY,
 			.magic = RECORD_MAGIC,
 			.depth = 0,
 		},
 		{
 			.time = 302,
-			.type = UFTRACE_ENTRY,
+			.type = MOTRACE_ENTRY,
 			.magic = RECORD_MAGIC,
 			.depth = 1,
 		},
 		{
 			.time = 303,
-			.type = UFTRACE_EXIT,
+			.type = MOTRACE_EXIT,
 			.magic = RECORD_MAGIC,
 			.depth = 1,
 		},
 		{
 			.time = 304,
-			.type = UFTRACE_EXIT,
+			.type = MOTRACE_EXIT,
 			.magic = RECORD_MAGIC,
 			.depth = 0,
 		},
@@ -750,12 +750,12 @@ static int create_test_data(struct uftrace_opts *opts)
 	return 0;
 }
 
-static int remove_test_data(struct uftrace_opts *opts)
+static int remove_test_data(struct motrace_opts *opts)
 {
 	return remove_directory(opts->dirname);
 }
 
-int prepare_test_data(struct uftrace_opts *opts, struct uftrace_data *handle)
+int prepare_test_data(struct motrace_opts *opts, struct motrace_data *handle)
 {
 	FILE *dev_null;
 
@@ -784,7 +784,7 @@ int prepare_test_data(struct uftrace_opts *opts, struct uftrace_data *handle)
 	return 0;
 }
 
-int release_test_data(struct uftrace_opts *opts, struct uftrace_data *handle)
+int release_test_data(struct motrace_opts *opts, struct motrace_data *handle)
 {
 	FILE *dev_null = outfp;
 
@@ -802,14 +802,14 @@ int release_test_data(struct uftrace_opts *opts, struct uftrace_data *handle)
 
 TEST_CASE(data_basic)
 {
-	struct uftrace_opts opts = {
+	struct motrace_opts opts = {
 		.dirname = "data-test",
 		.exename = read_exename(),
 		.max_stack = 10,
 	};
-	struct uftrace_data handle;
-	struct uftrace_session *s;
-	struct uftrace_task *t;
+	struct motrace_data handle;
+	struct motrace_session *s;
+	struct motrace_task *t;
 
 	pr_dbg("create test data\n");
 	if (create_test_data(&opts) < 0)
@@ -839,7 +839,7 @@ TEST_CASE(data_basic)
 
 	TEST_EQ(t->tid, 10);
 	TEST_EQ(t->tid, t->pid);
-	TEST_STREQ(t->comm, uftrace_basename(opts.exename));
+	TEST_STREQ(t->comm, motrace_basename(opts.exename));
 
 	close_data_file(&opts, &handle);
 

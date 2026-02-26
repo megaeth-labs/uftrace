@@ -2,12 +2,12 @@
 #include "utils/arch.h"
 #include "utils/utils.h"
 
-struct uftrace_reg_table {
+struct motrace_reg_table {
 	const char *name;
 	int reg;
 };
 
-static const struct uftrace_reg_table uft_x86_64_reg_table[] = {
+static const struct motrace_reg_table uft_x86_64_reg_table[] = {
 #define X86_REG(_r)                                                                                \
 	{                                                                                          \
 #_r, UFT_X86_64_REG_##_r                                                           \
@@ -33,7 +33,7 @@ static const struct uftrace_reg_table uft_x86_64_reg_table[] = {
 #undef X86_REG
 };
 
-static const struct uftrace_reg_table uft_arm_reg_table[] = {
+static const struct motrace_reg_table uft_arm_reg_table[] = {
 #define ARM_REG(_r)                                                                                \
 	{                                                                                          \
 #_r, UFT_ARM_REG_##_r                                                              \
@@ -73,7 +73,7 @@ static const struct uftrace_reg_table uft_arm_reg_table[] = {
 #undef ARM_REG
 };
 
-static const struct uftrace_reg_table uft_aarch64_reg_table[] = {
+static const struct motrace_reg_table uft_aarch64_reg_table[] = {
 #define ARM64_REG(_r)                                                                              \
 	{                                                                                          \
 #_r, UFT_AARCH64_REG_##_r                                                          \
@@ -109,7 +109,7 @@ static const struct uftrace_reg_table uft_aarch64_reg_table[] = {
 #undef ARM64_REG
 };
 
-static const struct uftrace_reg_table uft_i386_reg_table[] = {
+static const struct motrace_reg_table uft_i386_reg_table[] = {
 #define X86_REG(_r)                                                                                \
 	{                                                                                          \
 #_r, UFT_I386_REG_##_r                                                             \
@@ -131,7 +131,7 @@ static const struct uftrace_reg_table uft_i386_reg_table[] = {
 #undef X86_REG
 };
 
-static const struct uftrace_reg_table uft_riscv64_reg_table[] = {
+static const struct motrace_reg_table uft_riscv64_reg_table[] = {
 #define RISCV64_REG(_r)                                                                            \
 	{                                                                                          \
 #_r, UFT_RISCV64_REG_##_r                                                          \
@@ -160,7 +160,7 @@ static const struct uftrace_reg_table uft_riscv64_reg_table[] = {
 #undef RISCV64_REG
 };
 
-static const struct uftrace_reg_table *arch_reg_tables[] = {
+static const struct motrace_reg_table *arch_reg_tables[] = {
 	NULL,
 	uft_x86_64_reg_table,
 	uft_arm_reg_table,
@@ -183,11 +183,11 @@ static const int arch_reg_int_sizes[] = {
 	0, 6, 4, 8, 2, 8,
 };
 
-/* returns uftrace register number for the architecture */
-int arch_register_number(enum uftrace_cpu_arch arch, char *reg_name)
+/* returns motrace register number for the architecture */
+int arch_register_number(enum motrace_cpu_arch arch, char *reg_name)
 {
 	unsigned i;
-	const struct uftrace_reg_table *table;
+	const struct motrace_reg_table *table;
 
 	ASSERT(arch < ARRAY_SIZE(arch_reg_tables));
 
@@ -199,11 +199,11 @@ int arch_register_number(enum uftrace_cpu_arch arch, char *reg_name)
 	return -1;
 }
 
-/* return uftrace register number at the given index (for argspec) */
-int arch_register_at(enum uftrace_cpu_arch arch, bool integer, int idx)
+/* return motrace register number at the given index (for argspec) */
+int arch_register_at(enum motrace_cpu_arch arch, bool integer, int idx)
 {
 	int int_regs;
-	const struct uftrace_reg_table *table;
+	const struct motrace_reg_table *table;
 
 	ASSERT(arch < ARRAY_SIZE(arch_reg_tables));
 	int_regs = arch_reg_int_sizes[arch];
@@ -222,11 +222,11 @@ int arch_register_at(enum uftrace_cpu_arch arch, bool integer, int idx)
 	return table[idx].reg;
 }
 
-/* returns argspec register index from uftrace register number */
-int arch_register_index(enum uftrace_cpu_arch arch, int reg)
+/* returns argspec register index from motrace register number */
+int arch_register_index(enum motrace_cpu_arch arch, int reg)
 {
 	unsigned i;
-	const struct uftrace_reg_table *table;
+	const struct motrace_reg_table *table;
 
 	ASSERT(arch < ARRAY_SIZE(arch_reg_tables));
 
@@ -242,9 +242,9 @@ int arch_register_index(enum uftrace_cpu_arch arch, int reg)
 	return -1;
 }
 
-const char *arch_register_argspec_name(enum uftrace_cpu_arch arch, bool integer, int idx)
+const char *arch_register_argspec_name(enum motrace_cpu_arch arch, bool integer, int idx)
 {
-	const struct uftrace_reg_table *table;
+	const struct motrace_reg_table *table;
 
 	ASSERT(arch < ARRAY_SIZE(arch_reg_tables));
 
@@ -263,7 +263,7 @@ const char *arch_register_argspec_name(enum uftrace_cpu_arch arch, bool integer,
 
 #include <dwarf.h>
 
-static const struct uftrace_reg_table uft_x86_64_dwarf_table[] = {
+static const struct motrace_reg_table uft_x86_64_dwarf_table[] = {
 	/* support registers used for arguments */
 	{
 		"rdx",
@@ -324,7 +324,7 @@ static const struct uftrace_reg_table uft_x86_64_dwarf_table[] = {
 };
 
 #define ARM_REG_VFPv3_BASE 256
-static const struct uftrace_reg_table uft_arm_dwarf_table[] = {
+static const struct motrace_reg_table uft_arm_dwarf_table[] = {
 	/* support registers used for arguments */
 	{
 		"r0",
@@ -377,7 +377,7 @@ static const struct uftrace_reg_table uft_arm_dwarf_table[] = {
 };
 
 #define AARCH64_REG_FP_BASE 64
-static const struct uftrace_reg_table uft_aarch64_dwarf_table[] = {
+static const struct motrace_reg_table uft_aarch64_dwarf_table[] = {
 	/* support registers used for arguments */
 	{
 		"x0",
@@ -445,10 +445,10 @@ static const struct uftrace_reg_table uft_aarch64_dwarf_table[] = {
 	},
 };
 
-static const struct uftrace_reg_table uft_i386_dwarf_table[] = {};
+static const struct motrace_reg_table uft_i386_dwarf_table[] = {};
 
 #define RISCV64_REG_FP_BASE 32
-static const struct uftrace_reg_table uft_riscv64_dwarf_table[] = {
+static const struct motrace_reg_table uft_riscv64_dwarf_table[] = {
 	/* support registers used for arguments */
 	{
 		"a0",
@@ -516,7 +516,7 @@ static const struct uftrace_reg_table uft_riscv64_dwarf_table[] = {
 	},
 };
 
-static const struct uftrace_reg_table *arch_dwarf_tables[] = {
+static const struct motrace_reg_table *arch_dwarf_tables[] = {
 	NULL,
 	uft_x86_64_dwarf_table,
 	uft_arm_dwarf_table,
@@ -534,11 +534,11 @@ static const size_t arch_dwarf_sizes[] = {
 	ARRAY_SIZE(uft_riscv64_dwarf_table),
 };
 
-const char *arch_register_dwarf_name(enum uftrace_cpu_arch arch, int dwarf_reg)
+const char *arch_register_dwarf_name(enum motrace_cpu_arch arch, int dwarf_reg)
 {
 	unsigned i;
 
-	const struct uftrace_reg_table *table;
+	const struct motrace_reg_table *table;
 
 	ASSERT(arch < ARRAY_SIZE(arch_dwarf_tables));
 
