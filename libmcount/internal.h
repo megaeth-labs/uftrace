@@ -207,6 +207,8 @@ extern bool mcount_offcpu;
 extern struct motrace_sym_info mcount_sym_info;
 extern struct motrace_filter_setting mcount_filter_setting;
 extern struct motrace_triggers_info *mcount_triggers;
+extern char *mcount_mo_patch;
+extern enum motrace_pattern_type mcount_mo_patch_ptype;
 
 enum mcount_global_flag {
 	MCOUNT_GFL_SETUP = (1U << 0),

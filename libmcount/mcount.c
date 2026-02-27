@@ -104,6 +104,10 @@ struct motrace_filter_setting mcount_filter_setting = {
 	.allow_kernel = false,
 };
 
+/* optional patch list for mo-mode attach (-P) */
+char *mcount_mo_patch;
+enum motrace_pattern_type mcount_mo_patch_ptype = PATT_REGEX;
+
 /* boolean flag to turn on/off recording */
 bool __maybe_unused mcount_enabled = true;
 
@@ -1640,8 +1644,15 @@ int mcount_mo_attach(void *data, size_t len)
 {
 	struct motrace_agent_mo_attach *args = data;
 	const char *dirname;
+	const char *patch = NULL;
+	const char *pattern = NULL;
+	const char *symdir = NULL;
+	const char *payload_end;
 	const char *dir;
+	const char *next;
 	char buf[32];
+	bool symdir_field = false;
+	bool ptype_override = false;
 
 	if (mcount_mo_attached)
 		return 0;
@@ -1649,9 +1660,63 @@ int mcount_mo_attach(void *data, size_t len)
 	if (args == NULL || len < sizeof(*args) + 1)
 		return -1;
 
+	payload_end = (const char *)args + len;
 	dirname = args->dirname;
-	if (memchr(dirname, '\0', len - sizeof(*args)) == NULL)
+	next = memchr(dirname, '\0', payload_end - dirname);
+	if (next == NULL)
 		return -1;
+	next++;
+
+	if (next < payload_end) {
+		const char *patch_end = memchr(next, '\0', payload_end - next);
+
+		if (patch_end == NULL)
+			return -1;
+		if (next != patch_end)
+			patch = next;
+		next = patch_end + 1;
+	}
+
+	if (next < payload_end) {
+		const char *patt_end = memchr(next, '\0', payload_end - next);
+
+		if (patt_end == NULL)
+			return -1;
+		if (next != patt_end)
+			pattern = next;
+		next = patt_end + 1;
+	}
+
+	if (next < payload_end) {
+		const char *sym_end = memchr(next, '\0', payload_end - next);
+
+		if (sym_end == NULL)
+			return -1;
+		symdir_field = true;
+		if (next != sym_end)
+			symdir = next;
+	}
+
+	free(mcount_mo_patch);
+	mcount_mo_patch = NULL;
+	mcount_mo_patch_ptype = PATT_REGEX;
+	if (patch && patch[0])
+		mcount_mo_patch = xstrdup(patch);
+	if (pattern && pattern[0]) {
+		enum motrace_pattern_type ptype = parse_filter_pattern(pattern);
+
+		if (ptype != PATT_NONE) {
+			mcount_mo_patch_ptype = ptype;
+			ptype_override = true;
+			setenv("MOTRACE_PATTERN", pattern, 1);
+		}
+	}
+	if (symdir_field) {
+		if (symdir && symdir[0])
+			setenv("MOTRACE_SYMBOL_DIR", symdir, 1);
+		else
+			unsetenv("MOTRACE_SYMBOL_DIR");
+	}
 
 	if (dirname[0] != '\0')
 		setenv("MOTRACE_DIR", dirname, 1);
@@ -1681,8 +1746,15 @@ int mcount_mo_attach(void *data, size_t len)
 
 	if (mcount_global_flags & MCOUNT_GFL_SETUP)
 		mcount_startup();
-	else if (mcount_mo_session_start(dir) < 0)
+	else if (mcount_mo_session_start(dir) < 0) {
+		free(mcount_mo_patch);
+		mcount_mo_patch = NULL;
+		mcount_mo_patch_ptype = PATT_REGEX;
 		return -1;
+	}
+
+	if (mcount_mo_patch && !ptype_override)
+		mcount_mo_patch_ptype = mcount_filter_setting.ptype;
 
 	mcount_enabled = true;
 	mcount_offcpu = !!(args->flags & MOTRACE_MO_ATTACH_F_OFFCPU);
@@ -1692,6 +1764,9 @@ int mcount_mo_attach(void *data, size_t len)
 
 	if (mcount_mo_xray_patch(true) < 0) {
 		mcount_trace_finish(true);
+		free(mcount_mo_patch);
+		mcount_mo_patch = NULL;
+		mcount_mo_patch_ptype = PATT_REGEX;
 		return -1;
 	}
 
@@ -1709,6 +1784,10 @@ int mcount_mo_detach(void)
 
 	/* disable sleds first to avoid new entries */
 	mcount_mo_xray_patch(false);
+
+	free(mcount_mo_patch);
+	mcount_mo_patch = NULL;
+	mcount_mo_patch_ptype = PATT_REGEX;
 
 	mcount_trace_finish(true);
 

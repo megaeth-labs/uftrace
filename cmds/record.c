@@ -2329,19 +2329,72 @@ int command_attach(int argc, char *argv[], struct motrace_opts *opts)
 	sigaction(SIGTERM, &sa_new, &sa_old_term);
 
 	{
+		char *patch_str = NULL;
+		const char *pattern_str = NULL;
+		const char *symdir_str = NULL;
+		char symdir_path[PATH_MAX];
 		size_t dlen = strlen(opts->dirname) + 1;
-		size_t alen = sizeof(struct motrace_agent_mo_attach) + dlen;
-		struct motrace_agent_mo_attach *a = xmalloc(alen);
+		size_t plen = 0;
+		size_t tlen = 0;
+		size_t slen = 0;
+		size_t alen;
+		struct motrace_agent_mo_attach *a;
+		char *pos;
+
+		if (opts->patch) {
+			patch_str = motrace_clear_kernel(opts->patch);
+			if (patch_str) {
+				plen = strlen(patch_str) + 1;
+				if (opts->patt_type != PATT_REGEX) {
+					pattern_str = get_filter_pattern(opts->patt_type);
+					tlen = strlen(pattern_str) + 1;
+				}
+			}
+		}
+
+		if (opts->with_syms) {
+			symdir_str = opts->with_syms;
+			if (realpath(symdir_str, symdir_path) != NULL)
+				symdir_str = symdir_path;
+			slen = strlen(symdir_str) + 1;
+		}
+
+		/* keep the payload layout stable when symdir is present */
+		if (slen && !plen)
+			plen = 1;
+		if (slen && !tlen)
+			tlen = 1;
+
+		alen = sizeof(struct motrace_agent_mo_attach) + dlen + plen + tlen + slen;
+		a = xmalloc(alen);
 
 		a->flags = opts->offcpu ? MOTRACE_MO_ATTACH_F_OFFCPU : 0;
 		a->bufsize = opts->bufsize;
 		a->max_stack = opts->max_stack;
 		a->reserved = 0;
 		memcpy(a->dirname, opts->dirname, dlen);
+		pos = a->dirname + dlen;
+		if (plen) {
+			if (patch_str)
+				memcpy(pos, patch_str, plen);
+			else
+				*pos = '\0';
+			pos += plen;
+		}
+		if (tlen) {
+			if (pattern_str)
+				memcpy(pos, pattern_str, tlen);
+			else
+				*pos = '\0';
+			pos += tlen;
+		}
+		if (slen)
+			memcpy(pos, symdir_str, slen);
 
 		if (send_agent_mo_opt(opts->pid, MOTRACE_AGENT_OPT_MO_ATTACH, a, alen, false) < 0)
 			pr_err("failed to attach to target");
 
+		free(patch_str);
 		free(a);
 	}
 

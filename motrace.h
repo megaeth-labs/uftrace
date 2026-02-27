@@ -495,7 +495,7 @@ struct motrace_agent_mo_attach {
 	uint32_t bufsize; /* shmem buffer size in bytes */
 	uint32_t max_stack;
 	uint32_t reserved;
-	char dirname[]; /* NUL-terminated */
+	char dirname[]; /* NUL-terminated, followed by optional patch/pattern/symdir strings */
 };
 
 extern struct motrace_session *first_session;

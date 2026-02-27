@@ -11,6 +11,7 @@
 #include "libmcount/dynamic.h"
 #include "libmcount/internal.h"
 #include "mcount-arch.h"
+#include "utils/list.h"
 #include "utils/symbol.h"
 #include "utils/utils.h"
 
@@ -485,8 +486,88 @@ static void read_xray_map(struct mcount_dynamic_info *mdi, struct motrace_elf_da
 	}
 }
 
+struct xray_patt_list {
+	struct list_head list;
+	bool positive;
+	char *module;
+	struct motrace_pattern patt;
+};
+
+static LIST_HEAD(xray_patterns);
+
+static void xray_parse_pattern_list(const char *patch_funcs, const char *def_mod,
+				    enum motrace_pattern_type ptype)
+{
+	struct strv funcs = STRV_INIT;
+	char *name;
+	int j;
+	struct xray_patt_list *pl;
+
+	if (patch_funcs == NULL || patch_funcs[0] == '\0')
+		return;
+
+	strv_split(&funcs, patch_funcs, ";");
+
+	strv_for_each(&funcs, name, j) {
+		char *delim;
+
+		pl = xzalloc(sizeof(*pl));
+
+		if (name[0] == '!')
+			name++;
+		else
+			pl->positive = true;
+
+		delim = strchr(name, '@');
+		if (delim == NULL) {
+			pl->module = xstrdup(def_mod);
+		}
+		else {
+			*delim = '\0';
+			pl->module = xstrdup(++delim);
+		}
+
+		init_filter_pattern(ptype, &pl->patt, name);
+		list_add_tail(&pl->list, &xray_patterns);
+	}
+
+	strv_free(&funcs);
+}
+
+static void xray_release_pattern_list(void)
+{
+	struct xray_patt_list *pl, *tmp;
+
+	list_for_each_entry_safe(pl, tmp, &xray_patterns, list) {
+		list_del(&pl->list);
+		free_filter_pattern(&pl->patt);
+		free(pl->module);
+		free(pl);
+	}
+}
+
+static int xray_match_pattern_list(const char *libname, const char *soname, const char *sym_name)
+{
+	struct xray_patt_list *pl;
+	int ret = 0;
+
+	list_for_each_entry(pl, &xray_patterns, list) {
+		int len = strlen(pl->module);
+
+		if (strncmp(libname, pl->module, len) &&
+		    (!soname || strncmp(soname, pl->module, len)))
+			continue;
+
+		if (match_filter_pattern(&pl->patt, (char *)sym_name))
+			ret = pl->positive ? 1 : -1;
+	}
+
+	return ret;
+}
+
 struct xray_patch_ctx {
 	bool enable;
+	bool use_filter;
 	int patched;
 	int failed;
 	int skipped;
@@ -527,6 +608,29 @@ static struct mcount_dynamic_info *create_mdi_for_phdr(struct dl_phdr_info *info
 	return mdi;
 }
 
+static bool *build_xray_patch_mask(struct mcount_dynamic_info *mdi, const char *libname,
+				   const char *soname)
+{
+	bool *mask;
+	unsigned i;
+
+	if (mdi->nr_patch_target == 0)
+		return NULL;
+
+	mask = xcalloc(mdi->nr_patch_target, sizeof(*mask));
+	for (i = 0; i < mdi->nr_patch_target; i++) {
+		struct xray_instr_map *xrmap = &((struct xray_instr_map *)mdi->patch_target)[i];
+		struct motrace_symbol *sym = find_symtabs(&mcount_sym_info, xrmap->function);
+
+		if (sym == NULL)
+			continue;
+		if (xray_match_pattern_list(libname, soname, sym->name) == 1)
+			mask[i] = true;
+	}
+
+	return mask;
+}
+
 static int patch_xray_module(struct dl_phdr_info *info, size_t sz, void *data)
 {
 	struct xray_patch_ctx *ctx = data;
@@ -534,6 +638,9 @@ static int patch_xray_module(struct dl_phdr_info *info, size_t sz, void *data)
 	struct motrace_elf_data elf;
 	struct motrace_elf_iter iter;
 	const char *path = info->dlpi_name;
+	const char *libname;
+	char *soname = NULL;
+	bool *do_patch = NULL;
 	bool is_main = false;
 	bool found = false;
 	unsigned i;
@@ -547,6 +654,8 @@ static int patch_xray_module(struct dl_phdr_info *info, size_t sz, void *data)
 
 	if (!path || !*path)
 		return 0;
+
+	libname = motrace_basename(path);
 
 	mdi = create_mdi_for_phdr(info);
 	if (mdi == NULL)
@@ -579,11 +688,19 @@ static int patch_xray_module(struct dl_phdr_info *info, size_t sz, void *data)
 		goto out_free_targets;
 	}
 
+	if (ctx->use_filter) {
+		soname = get_soname(path);
+		do_patch = build_xray_patch_mask(mdi, libname, soname);
+	}
+
 	if (ctx->enable) {
 		for (i = 0; i < mdi->nr_patch_target; i++) {
 			struct xray_instr_map *xrmap =
 				&((struct xray_instr_map *)mdi->patch_target)[i];
 			int r;
+
+			if (do_patch && !do_patch[i])
+				continue;
 
 			r = prepare_xray_entry_sled(mdi, xrmap);
 			if (r == INSTRUMENT_SUCCESS)
@@ -608,6 +725,9 @@ static int patch_xray_module(struct dl_phdr_info *info, size_t sz, void *data)
 				&((struct xray_instr_map *)mdi->patch_target)[i];
 			int r;
 
+			if (do_patch && !do_patch[i])
+				continue;
+
 			r = enable_xray_exit_sled(xrmap);
 			if (r == INSTRUMENT_SUCCESS)
 				ctx->patched++;
@@ -621,6 +741,9 @@ static int patch_xray_module(struct dl_phdr_info *info, size_t sz, void *data)
 			struct xray_instr_map *xrmap =
 				&((struct xray_instr_map *)mdi->patch_target)[i];
 			int r;
+
+			if (do_patch && !do_patch[i])
+				continue;
 
 			r = enable_xray_entry_sled(xrmap);
 			if (r == INSTRUMENT_SUCCESS)
@@ -638,6 +761,9 @@ static int patch_xray_module(struct dl_phdr_info *info, size_t sz, void *data)
 				&((struct xray_instr_map *)mdi->patch_target)[i];
 			int r;
 
+			if (do_patch && !do_patch[i])
+				continue;
+
 			r = disable_xray_exit_sled(xrmap);
 			if (r == INSTRUMENT_SUCCESS)
 				ctx->patched++;
@@ -652,6 +778,9 @@ static int patch_xray_module(struct dl_phdr_info *info, size_t sz, void *data)
 				&((struct xray_instr_map *)mdi->patch_target)[i];
 			int r;
 
+			if (do_patch && !do_patch[i])
+				continue;
+
 			r = disable_xray_entry_sled(xrmap);
 			if (r == INSTRUMENT_SUCCESS)
 				ctx->patched++;
@@ -665,6 +794,8 @@ static int patch_xray_module(struct dl_phdr_info *info, size_t sz, void *data)
 	mcount_cleanup_trampoline(mdi);
 
 out_free_targets:
+	free(do_patch);
+	free(soname);
 	free(mdi->patch_target);
 out_free:
 	free(mdi);
@@ -676,8 +807,22 @@ int mcount_mo_xray_patch(bool enable)
 	struct xray_patch_ctx ctx = {
 		.enable = enable,
 	};
+	const char *def_mod = "unknown";
+
+	if (mcount_mo_patch && mcount_mo_patch[0]) {
+		if (mcount_sym_info.exec_map && mcount_sym_info.exec_map->libname)
+			def_mod = motrace_basename(mcount_sym_info.exec_map->libname);
+		else if (mcount_exename)
+			def_mod = motrace_basename(mcount_exename);
+
+		xray_parse_pattern_list(mcount_mo_patch, def_mod, mcount_mo_patch_ptype);
+		ctx.use_filter = true;
+	}
 
 	dl_iterate_phdr(patch_xray_module, &ctx);
+
+	if (ctx.use_filter)
+		xray_release_pattern_list();
 
 	if (ctx.failed)
 		return -1;
